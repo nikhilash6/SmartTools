@@ -49,10 +49,41 @@ Resizes a batch of images to a target resolution with optional **letterboxing** 
 Same PNG output and metadata behaviour as ComfyUI’s built-in **Save Image** (`folder_paths.get_save_image_path`, `%batch_num%`, optional workflow metadata in PNG), but files are written to the **output** folder only when you click **Save Image** on the node.
 
 1. **Queue the workflow** at least once so the node can cache the current image batch (keyed by the graph node id).
-2. The node shows **temp** previews under `temp/SmartSavePreview/` so thumbnails update without writing to the final output path.
+2. The node shows a **temp** video preview under `temp/SmartSaveVideo/` so you can review playback without writing to the final output path.
 3. Click **Save Image** to write PNGs to the output directory.
 
 Requires the included **web** extension (`web/smart_save.js`); restart ComfyUI after installing or updating this pack.
+
+---
+
+### Smart Save Video
+
+**Display name:** Smart Save Video  
+**Category:** `slikvik`
+
+Self-contained FFmpeg video encoder with the same manual-save workflow as **Smart Save**. It does **not** depend on VideoHelperSuite. Bundled presets live in [`video_formats/`](video_formats/) (h264/h265 MP4, WebM, AV1, NVENC variants, ProRes, FFV1).
+
+| Input | Notes |
+|--------|--------|
+| `images` | Frame batch `(B, H, W, C)` to encode. |
+| `autosave` | Default **OFF**. When ON, the final video is written during execution; the Save Video button is disabled. |
+| `inc_audio` | Default **ON**. When ON and `audio` is connected, audio is muxed into the single saved file. When OFF (or no audio), exactly one silent video is produced. Never writes both silent and muxed copies. |
+| `frame_rate`, `loop_count`, `pingpong` | Encoding timing controls. |
+| `filename_prefix` | Relative `subfolder/name`, plain prefix, or absolute folder path. |
+| `format` | Bundled FFmpeg preset name. |
+| `crf`, `pix_fmt`, `bitrate`, `megabit`, `profile` | Quality / codec options applied when the selected preset uses them. |
+| `save_metadata` | Embed workflow/prompt metadata into the container when the preset supports it. No first-frame PNG sidecar is written. |
+| `audio` | Optional ComfyUI `AUDIO` dict (`waveform`, `sample_rate`). |
+| `original` | Optional frame batch. When connected, the node encodes a second silent temp preview and the UI shows New and Original side-by-side, time-synced from the first frame. Save / autosave still target only the primary (`images`) video. |
+| `use_timestamp` | Counter vs timestamp filenames on final save. |
+
+**ffmpeg:** Required for encoding. Resolved from `SMART_SAVE_VIDEO_FFMPEG` / `VHS_FORCE_FFMPEG_PATH`, `imageio-ffmpeg`, system `PATH`, or a local `ffmpeg` / `ffmpeg.exe`.
+
+1. Queue the workflow so the node encodes a temp preview video. The node UI shows an interactive video player (play / pause / mute / timeline). When `original` is connected, both videos play side-by-side and stay synced.
+2. With autosave **OFF**, click **Save Video** to copy that encoded file to the chosen output path without re-encoding.
+3. Buttons match Smart Save: browse path, open folder, favorites, and save history (`web/smart_save_video.js`).
+
+**Outputs:** `video_path` is the absolute path of the autosaved file, or the temp encode when autosave is off.
 
 ---
 
