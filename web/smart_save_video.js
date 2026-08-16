@@ -347,10 +347,34 @@ app.registerExtension({
                 setTimeout(dismiss, 15000);
             }
 
+            // Fingerprint of preview + destination settings; blocks duplicate manual saves.
+            let lastSavedKey = null;
+
+            function videoSaveKey(video) {
+                if (!video?.filename) return null;
+                return [
+                    video.type || "temp",
+                    video.subfolder || "",
+                    video.filename,
+                    getPrefix(),
+                    getTimestamp() ? "1" : "0",
+                ].join("|");
+            }
+
+            function markVideoSaved(video) {
+                const key = videoSaveKey(video);
+                if (key) lastSavedKey = key;
+            }
+
             async function doSave() {
                 const video = self.currentVideo;
                 if (!video?.filename) {
                     showToast("No video to save. Please run the workflow first.", true);
+                    return;
+                }
+                const key = videoSaveKey(video);
+                if (key && key === lastSavedKey) {
+                    showToast("Already saved — this video with the current save settings was already saved.");
                     return;
                 }
                 try {
@@ -374,6 +398,7 @@ app.registerExtension({
                             path: savedPath,
                             time: new Date().toLocaleString(),
                         });
+                        markVideoSaved(video);
                         showToast(`✅ Saved: ${savedFilename}`);
                     } else {
                         showToast(`❌ Save failed: ${await response.text()}`, true);
@@ -458,6 +483,10 @@ app.registerExtension({
                 autosaveWidget.callback = function (value) {
                     originalCallback?.call(this, value);
                     saveBtn.disabled = !!value;
+                    // Autosave ON means the current preview is (or will be) written — treat as saved.
+                    if (value && self.currentVideo?.filename) {
+                        markVideoSaved(self.currentVideo);
+                    }
                 };
                 saveBtn.disabled = !!autosaveWidget.value;
             }
@@ -675,6 +704,12 @@ app.registerExtension({
                 const originalInfo = gifs[1] || null;
                 this.currentVideo = info;
                 setPreviewSource(info, originalInfo);
+                // New encode resets duplicate-save tracking unless autosave already wrote it.
+                if (info?.filename && isAutoSave()) {
+                    markVideoSaved(info);
+                } else {
+                    lastSavedKey = null;
+                }
             };
         };
     },

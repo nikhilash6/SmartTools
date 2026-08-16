@@ -41,6 +41,35 @@ Resizes a batch of images to a target resolution with optional **letterboxing** 
 
 ---
 
+### Smart Resizer v2
+
+**Display name:** Smart Resizer v2  
+**Category:** `slikvik/Image`
+
+Separate from **Smart Resizer** (v1) for testing. Sizing is driven by **Width**, **Height**, and **Aspect Ratio**, with **Multiple** applied to the final resolution.
+
+| Input | Notes |
+|--------|--------|
+| `image` | Image batch `(B, H, W, C)` |
+| `width` / `height` | Proposed size; `0` means derive from other settings |
+| `aspect_ratio` | **Input**, **Smart**, **1:1 (Square)**, **16:9 (Widescreen)**, **9:16 (Portrait Widescreen)** |
+| `multiple` | Final W/H snapped to this multiple (default 1) |
+| `pad_image` | Pad (letterbox) or crop to fit |
+| `resampling` | Lanczos / Bilinear / Nearest-Exact |
+| `feathering` | Feathers letterbox pad edges; combined with optional `mask` via `max` |
+| `overlay_mask` | White overlay where the output mask is bright |
+| `mask` | Optional; resized into the content region |
+
+**Aspect Input:** both dims 0 or both non-zero → keep source size, then Multiple. Exactly one dim set → scale to that dim keeping source aspect, then Multiple.
+
+**Smart / fixed ratio:** both dims 0 → build a target frame of that aspect from the input (pad = contain, crop = cover). One dim set → that dim forces the frame at the target aspect. Both dims set → expand the proposed box to the aspect, then pad/crop. Multiple snaps last (keeping the locked aspect).
+
+The node shows **Input W×H**, **Output W×H**, and a preview of the result (`web/smart_resizer_v2.js`).
+
+**Outputs:** `image`, `width`, `height`, `mask`.
+
+---
+
 ### Smart Save
 
 **Display name:** Smart Save  
