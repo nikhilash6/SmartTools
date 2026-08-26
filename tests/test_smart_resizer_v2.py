@@ -70,6 +70,14 @@ class RegistrationTests(unittest.TestCase):
             required["pad_colour"][0],
             ["Black", "Grey", "Red", "Green", "White"],
         )
+        self.assertEqual(required["size_mode"][1]["default"], rsz.SIZE_DIMENSIONS)
+        self.assertEqual(
+            required["size_mode"][0],
+            ["Dimensions", "Megapixels", "Shortest", "Longest"],
+        )
+        self.assertEqual(required["megapixels"][1]["default"], 1.0)
+        self.assertEqual(required["shortest"][1]["default"], 1024)
+        self.assertEqual(required["longest"][1]["default"], 1024)
 
 
 class SizingHelperTests(unittest.TestCase):
@@ -120,6 +128,54 @@ class SizingHelperTests(unittest.TestCase):
         self.assertAlmostEqual(tw / th, 16 / 9, places=2)
         self.assertGreaterEqual(tw, 800)
         self.assertGreaterEqual(th, 800)
+
+    def test_megapixels_input_preserves_source_aspect(self):
+        tw, th, ar = rsz.SmartResizerV2._compute_canvas(
+            200, 100, rsz.SIZE_MEGAPIXELS, 0, 0, 0.04, 1024, 1024, rsz.ASPECT_INPUT, True
+        )
+        self.assertIsNone(ar)
+        self.assertEqual(tw / th, 2.0)
+        self.assertAlmostEqual(tw * th / 1_000_000, 0.04, places=2)
+
+    def test_megapixels_wide_uses_locked_aspect(self):
+        tw, th, ar = rsz.SmartResizerV2._compute_canvas(
+            100, 100, rsz.SIZE_MEGAPIXELS, 0, 0, 0.01, 1024, 1024, rsz.ASPECT_WIDE, True
+        )
+        self.assertAlmostEqual(ar, 16 / 9)
+        self.assertAlmostEqual(tw / th, 16 / 9, places=2)
+
+    def test_shortest_wide_sets_nine_side(self):
+        tw, th, ar = rsz.SmartResizerV2._compute_canvas(
+            100, 100, rsz.SIZE_SHORTEST, 0, 0, 1.0, 90, 1024, rsz.ASPECT_WIDE, True
+        )
+        self.assertEqual((tw, th), (160, 90))
+        self.assertAlmostEqual(ar, 16 / 9)
+
+    def test_longest_wide_sets_sixteen_side(self):
+        tw, th, ar = rsz.SmartResizerV2._compute_canvas(
+            100, 100, rsz.SIZE_LONGEST, 0, 0, 1.0, 1024, 160, rsz.ASPECT_WIDE, True
+        )
+        self.assertEqual((tw, th), (160, 90))
+        self.assertAlmostEqual(ar, 16 / 9)
+
+    def test_shortest_input_resizes_shortest_edge(self):
+        tw, th, ar = rsz.SmartResizerV2._compute_canvas(
+            100, 200, rsz.SIZE_SHORTEST, 0, 0, 1.0, 50, 1024, rsz.ASPECT_INPUT, True
+        )
+        self.assertEqual((tw, th, ar), (50, 100, None))
+
+    def test_longest_input_resizes_longest_edge(self):
+        tw, th, ar = rsz.SmartResizerV2._compute_canvas(
+            100, 200, rsz.SIZE_LONGEST, 0, 0, 1.0, 1024, 100, rsz.ASPECT_INPUT, True
+        )
+        self.assertEqual((tw, th, ar), (50, 100, None))
+
+    def test_shortest_smart_uses_chosen_aspect(self):
+        tw, th, ar = rsz.SmartResizerV2._compute_canvas(
+            100, 100, rsz.SIZE_SHORTEST, 0, 0, 1.0, 64, 1024, rsz.ASPECT_SMART, True
+        )
+        self.assertEqual(ar, 1.0)
+        self.assertEqual((tw, th), (64, 64))
 
 
 class ProcessTests(unittest.TestCase):
@@ -303,6 +359,34 @@ class ProcessTests(unittest.TestCase):
         self.assertGreater(float(mask[0, 79, 40].item()), 0.99)
         # Content region should retain some of the source mask signal.
         self.assertGreater(float(mask.max().item()), 0.5)
+
+    def test_shortest_wide_process(self):
+        img = _rgb(90, 160)
+        out = _run(
+            self.node,
+            img,
+            size_mode=rsz.SIZE_SHORTEST,
+            shortest=90,
+            aspect_ratio=rsz.ASPECT_WIDE,
+            pad_image=True,
+            multiple=1,
+        )
+        _image, w, h, _mask = out["result"]
+        self.assertEqual((w, h), (160, 90))
+
+    def test_megapixels_square_process(self):
+        img = _rgb(50, 50)
+        out = _run(
+            self.node,
+            img,
+            size_mode=rsz.SIZE_MEGAPIXELS,
+            megapixels=0.01,
+            aspect_ratio=rsz.ASPECT_INPUT,
+            multiple=1,
+        )
+        _image, w, h, _mask = out["result"]
+        self.assertEqual(w, h)
+        self.assertAlmostEqual(w * h / 1_000_000, 0.01, places=2)
 
 
 if __name__ == "__main__":

@@ -46,12 +46,15 @@ Resizes a batch of images to a target resolution with optional **letterboxing** 
 **Display name:** Smart Resizer v2  
 **Category:** `slikvik/Image`
 
-Separate from **Smart Resizer** (v1) for testing. Sizing is driven by **Width**, **Height**, and **Aspect Ratio**, with **Multiple** applied to the final resolution.
+Separate from **Smart Resizer** (v1) for testing. Sizing is driven by **Size Mode**, **Aspect Ratio**, and **Multiple** (applied last).
 
 | Input | Notes |
 |--------|--------|
 | `image` | Image batch `(B, H, W, C)` |
-| `width` / `height` | Proposed size; `0` means derive from other settings |
+| `size_mode` | **Dimensions**, **Megapixels**, **Shortest**, or **Longest** (shown first in the UI) |
+| `width` / `height` | Used when Size Mode is Dimensions. `0` means derive from other settings |
+| `megapixels` | Used when Size Mode is Megapixels. Target area in MP (0.10–100.00, default 1.0) |
+| `shortest` / `longest` | Used in Shortest / Longest mode. Sets that edge after Aspect Ratio (default 1024) |
 | `aspect_ratio` | **Input**, **Smart**, **1:1 (Square)**, **16:9 (Widescreen)**, **9:16 (Portrait Widescreen)** |
 | `multiple` | Final W/H snapped to this multiple (default 1) |
 | `pad_image` | Pad (letterbox) or crop to fit |
@@ -61,9 +64,13 @@ Separate from **Smart Resizer** (v1) for testing. Sizing is driven by **Width**,
 | `overlay_mask` | Applies the selected Pad Colour where the output mask is bright |
 | `mask` | Optional; resized into the content region |
 
-**Aspect Input:** both dims 0 → keep source size. Both non-zero → use that exact target canvas and pad/crop into it. Exactly one dim set → derive the other from the source aspect. Multiple snaps last.
+**Dimensions + Aspect Input:** both dims 0 → keep source size. Both non-zero → use that exact target canvas and pad/crop into it. Exactly one dim set → derive the other from the source aspect.
 
-**Smart / fixed ratio:** both dims 0 → build a target frame of that aspect from the input (pad = contain, crop = cover). One dim set → that dim forces the frame at the target aspect. Both dims set → expand the proposed box to the aspect, then pad/crop. Multiple snaps last (keeping the locked aspect).
+**Megapixels:** target area is `megapixels × 1_000_000`. Aspect Input preserves source aspect (v1-style). Smart / fixed ratios use that aspect while matching the area.
+
+**Shortest / Longest:** set the named edge, then apply Aspect Ratio. For 16:9, Shortest is the 9-side and Longest is the 16-side. Aspect Input keeps the source aspect while resizing that edge. Smart picks 1:1 / 16:9 / 9:16 first, then applies the edge.
+
+**Smart / fixed ratio (Dimensions):** both dims 0 → build a target frame of that aspect from the input (pad = contain, crop = cover). One dim set → that dim forces the frame at the target aspect. Both dims set → expand the proposed box to the aspect, then pad/crop. Multiple snaps last (keeping the locked aspect).
 
 The node shows **Input W×H**, **Output W×H**, and a preview of the result (`web/smart_resizer_v2.js`).
 

@@ -43,6 +43,17 @@ PAD_RGB = {
     "White": (255, 255, 255),
 }
 
+SIZE_DIMENSIONS = "Dimensions"
+SIZE_MEGAPIXELS = "Megapixels"
+SIZE_SHORTEST = "Shortest"
+SIZE_LONGEST = "Longest"
+SIZE_MODE_CHOICES = [
+    SIZE_DIMENSIONS,
+    SIZE_MEGAPIXELS,
+    SIZE_SHORTEST,
+    SIZE_LONGEST,
+]
+
 
 class SmartResizerV2:
     """Resize with Width/Height/Aspect Ratio; Multiple snaps final resolution."""
@@ -156,6 +167,46 @@ class SmartResizerV2:
                         "tooltip": "Canvas colour used by Pad (Letterbox).",
                     },
                 ),
+                "size_mode": (
+                    SIZE_MODE_CHOICES,
+                    {
+                        "default": SIZE_DIMENSIONS,
+                        "tooltip": (
+                            "Dimensions: Width/Height. Megapixels: target area. "
+                            "Shortest/Longest: set that edge, then apply Aspect Ratio."
+                        ),
+                    },
+                ),
+                "megapixels": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.1,
+                        "max": 100.0,
+                        "step": 0.01,
+                        "tooltip": "Target megapixels. Aspect Ratio still applies.",
+                    },
+                ),
+                "shortest": (
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 1,
+                        "max": MAX_RESOLUTION,
+                        "step": 1,
+                        "tooltip": "Length of the shortest side after Aspect Ratio is applied.",
+                    },
+                ),
+                "longest": (
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 1,
+                        "max": MAX_RESOLUTION,
+                        "step": 1,
+                        "tooltip": "Length of the longest side after Aspect Ratio is applied.",
+                    },
+                ),
             },
             "optional": {
                 "mask": (
@@ -176,8 +227,8 @@ class SmartResizerV2:
     CATEGORY = "slikvik/Image"
     OUTPUT_NODE = True
     DESCRIPTION = (
-        "Smart Resizer v2: Width/Height/Aspect Ratio sizing with Multiple applied last, "
-        "pad or crop, mask feathering, and an on-node preview."
+        "Smart Resizer v2: Dimensions / Megapixels / Shortest / Longest sizing with "
+        "Aspect Ratio, Multiple applied last, pad or crop, and an on-node preview."
     )
 
     @staticmethod
@@ -317,6 +368,77 @@ class SmartResizerV2:
         # both_set
         tw, th = cls._expand_box_to_aspect(w, h, locked_ar)
         return tw, th, locked_ar
+
+    @classmethod
+    def _effective_aspect(cls, aspect_ratio: str, src_w: int, src_h: int) -> float:
+        locked = cls._resolve_target_aspect(aspect_ratio, src_w, src_h)
+        if locked is not None:
+            return locked
+        return src_w / src_h if src_h else 1.0
+
+    @staticmethod
+    def _size_from_megapixels(aspect: float, megapixels: float) -> tuple[int, int]:
+        mp = float(megapixels) if megapixels and megapixels > 0 else 1.0
+        pixels = mp * 1_000_000.0
+        ar = aspect if aspect > 0 else 1.0
+        height = max(1, int(round((pixels / ar) ** 0.5)))
+        width = max(1, int(round(height * ar)))
+        return width, height
+
+    @staticmethod
+    def _size_from_edge(aspect: float, edge_px: int, which: str) -> tuple[int, int]:
+        ar = aspect if aspect > 0 else 1.0
+        edge = max(1, int(edge_px))
+        if which == "shortest":
+            if ar >= 1.0:
+                height = edge
+                width = max(1, int(round(height * ar)))
+            else:
+                width = edge
+                height = max(1, int(round(width / ar)))
+        else:
+            if ar >= 1.0:
+                width = edge
+                height = max(1, int(round(width / ar)))
+            else:
+                height = edge
+                width = max(1, int(round(height * ar)))
+        return width, height
+
+    @classmethod
+    def _compute_canvas(
+        cls,
+        src_w: int,
+        src_h: int,
+        size_mode: str,
+        width: int,
+        height: int,
+        megapixels: float,
+        shortest: int,
+        longest: int,
+        aspect_ratio: str,
+        pad_image: bool,
+    ) -> tuple[int, int, float | None]:
+        locked_ar = cls._resolve_target_aspect(aspect_ratio, src_w, src_h)
+        mode = size_mode or SIZE_DIMENSIONS
+        if mode == SIZE_MEGAPIXELS:
+            tw, th = cls._size_from_megapixels(
+                cls._effective_aspect(aspect_ratio, src_w, src_h), megapixels
+            )
+            return tw, th, locked_ar
+        if mode == SIZE_SHORTEST:
+            tw, th = cls._size_from_edge(
+                cls._effective_aspect(aspect_ratio, src_w, src_h), shortest, "shortest"
+            )
+            return tw, th, locked_ar
+        if mode == SIZE_LONGEST:
+            tw, th = cls._size_from_edge(
+                cls._effective_aspect(aspect_ratio, src_w, src_h), longest, "longest"
+            )
+            return tw, th, locked_ar
+        return cls._compute_target_size(
+            src_w, src_h, width, height, aspect_ratio, pad_image
+        )
 
     @staticmethod
     def _letterbox_or_crop(
@@ -557,6 +679,10 @@ class SmartResizerV2:
         feathering: int = 40,
         overlay_mask: bool = False,
         mask: torch.Tensor | None = None,
+        size_mode: str = SIZE_DIMENSIONS,
+        megapixels: float = 1.0,
+        shortest: int = 1024,
+        longest: int = 1024,
     ):
         pil_resample = self._pil_resample(resampling)
         b, src_h, src_w, _ = image.shape
@@ -578,8 +704,17 @@ class SmartResizerV2:
                 "result": (image, src_w, src_h, empty_mask),
             }
 
-        target_w, target_h, locked_ar = self._compute_target_size(
-            src_w, src_h, width, height, aspect_ratio, pad_image
+        target_w, target_h, locked_ar = self._compute_canvas(
+            src_w,
+            src_h,
+            size_mode,
+            width,
+            height,
+            megapixels,
+            shortest,
+            longest,
+            aspect_ratio,
+            pad_image,
         )
 
         processed_images = []

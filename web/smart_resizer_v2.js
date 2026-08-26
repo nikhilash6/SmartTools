@@ -12,6 +12,70 @@ app.registerExtension({
             onNodeCreated?.apply(this, arguments);
 
             const self = this;
+            const getWidget = (name) => self.widgets?.find((w) => w.name === name);
+
+            function setWidgetHidden(widget, hidden) {
+                if (!widget) return;
+                if (hidden) {
+                    if (widget.__rsz2Hidden) return;
+                    widget.__rsz2Hidden = true;
+                    widget.__rsz2OrigType = widget.type;
+                    widget.__rsz2OrigComputeSize = widget.computeSize;
+                    widget.type = "hidden";
+                    widget.hidden = true;
+                    widget.computeSize = () => [0, -4];
+                } else if (widget.__rsz2Hidden) {
+                    widget.type = widget.__rsz2OrigType;
+                    widget.computeSize = widget.__rsz2OrigComputeSize;
+                    widget.hidden = false;
+                    delete widget.__rsz2Hidden;
+                    delete widget.__rsz2OrigType;
+                    delete widget.__rsz2OrigComputeSize;
+                }
+            }
+
+            function updateSizeModeVisibility() {
+                const mode = getWidget("size_mode")?.value || "Dimensions";
+                setWidgetHidden(getWidget("width"), mode !== "Dimensions");
+                setWidgetHidden(getWidget("height"), mode !== "Dimensions");
+                setWidgetHidden(getWidget("megapixels"), mode !== "Megapixels");
+                setWidgetHidden(getWidget("shortest"), mode !== "Shortest");
+                setWidgetHidden(getWidget("longest"), mode !== "Longest");
+                try {
+                    if (typeof self.computeSize === "function") {
+                        const size = self.computeSize(self.size);
+                        if (Array.isArray(size)) self.setSize?.(size);
+                    }
+                    app.graph?.setDirtyCanvas?.(true, true);
+                } catch (_) {}
+            }
+
+            // Show Size Mode first without changing saved widget order in Python.
+            const modeWidget = getWidget("size_mode");
+            const widthWidget = getWidget("width");
+            if (modeWidget && widthWidget && Array.isArray(this.widgets)) {
+                const modeIdx = this.widgets.indexOf(modeWidget);
+                const widthIdx = this.widgets.indexOf(widthWidget);
+                if (modeIdx > -1 && widthIdx > -1 && modeIdx !== widthIdx) {
+                    this.widgets.splice(modeIdx, 1);
+                    this.widgets.splice(widthIdx, 0, modeWidget);
+                }
+            }
+            if (modeWidget) {
+                const originalModeCallback = modeWidget.callback;
+                modeWidget.callback = function (value) {
+                    const result = originalModeCallback?.call(this, value);
+                    updateSizeModeVisibility();
+                    return result;
+                };
+            }
+            setTimeout(updateSizeModeVisibility, 0);
+
+            const onConfigure = this.onConfigure;
+            this.onConfigure = function () {
+                onConfigure?.apply(this, arguments);
+                updateSizeModeVisibility();
+            };
 
             const root = document.createElement("div");
             root.className = "smart_resizer_v2_preview";
