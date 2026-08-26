@@ -55,12 +55,13 @@ Separate from **Smart Resizer** (v1) for testing. Sizing is driven by **Width**,
 | `aspect_ratio` | **Input**, **Smart**, **1:1 (Square)**, **16:9 (Widescreen)**, **9:16 (Portrait Widescreen)** |
 | `multiple` | Final W/H snapped to this multiple (default 1) |
 | `pad_image` | Pad (letterbox) or crop to fit |
+| `pad_colour` | Letterbox colour: Black (default), Grey, Red, Green, or White |
 | `resampling` | Lanczos / Bilinear / Nearest-Exact |
 | `feathering` | Feathers letterbox pad edges; combined with optional `mask` via `max` |
-| `overlay_mask` | White overlay where the output mask is bright |
+| `overlay_mask` | Applies the selected Pad Colour where the output mask is bright |
 | `mask` | Optional; resized into the content region |
 
-**Aspect Input:** both dims 0 or both non-zero → keep source size, then Multiple. Exactly one dim set → scale to that dim keeping source aspect, then Multiple.
+**Aspect Input:** both dims 0 → keep source size. Both non-zero → use that exact target canvas and pad/crop into it. Exactly one dim set → derive the other from the source aspect. Multiple snaps last.
 
 **Smart / fixed ratio:** both dims 0 → build a target frame of that aspect from the input (pad = contain, crop = cover). One dim set → that dim forces the frame at the target aspect. Both dims set → expand the proposed box to the aspect, then pad/crop. Multiple snaps last (keeping the locked aspect).
 

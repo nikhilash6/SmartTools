@@ -34,6 +34,15 @@ ASPECT_CHOICES = [
     ASPECT_PORTRAIT,
 ]
 
+PAD_COLOURS = ["Black", "Grey", "Red", "Green", "White"]
+PAD_RGB = {
+    "Black": (0, 0, 0),
+    "Grey": (128, 128, 128),
+    "Red": (255, 0, 0),
+    "Green": (0, 255, 0),
+    "White": (255, 255, 255),
+}
+
 
 class SmartResizerV2:
     """Resize with Width/Height/Aspect Ratio; Multiple snaps final resolution."""
@@ -83,9 +92,10 @@ class SmartResizerV2:
                     {
                         "default": ASPECT_INPUT,
                         "tooltip": (
-                            "Input: keep source aspect (Width/Height only when exactly one "
-                            "is set). Smart: nearest of 1:1 / 16:9 / 9:16. Fixed ratios "
-                            "force that aspect via pad or crop."
+                            "Input: use both supplied dimensions as the target canvas, or "
+                            "derive the missing dimension from the source aspect. Smart: "
+                            "nearest of 1:1 / 16:9 / 9:16. Fixed ratios force that aspect "
+                            "via pad or crop."
                         ),
                     },
                 ),
@@ -133,9 +143,17 @@ class SmartResizerV2:
                         "label_on": "On",
                         "label_off": "Off",
                         "tooltip": (
-                            "Full-opacity white where the output mask is bright; unchanged "
-                            "where mask is 0."
+                            "Applies Pad Colour where the output mask is bright; unchanged "
+                            "where the mask is 0."
                         ),
+                    },
+                ),
+                # Appended after existing v2 widgets to preserve saved workflow values.
+                "pad_colour": (
+                    PAD_COLOURS,
+                    {
+                        "default": "Black",
+                        "tooltip": "Canvas colour used by Pad (Letterbox).",
                     },
                 ),
             },
@@ -268,8 +286,10 @@ class SmartResizerV2:
 
         if locked_ar is None:
             # Aspect Input
-            if both_zero or both_set:
+            if both_zero:
                 return src_w, src_h, None
+            if both_set:
+                return w, h, None
             if only_w:
                 tw = w
                 th = max(1, int(round(w / src_ar)))
@@ -304,6 +324,7 @@ class SmartResizerV2:
         target_width: int,
         target_height: int,
         pad_image: bool,
+        pad_colour: str,
         pil_resample,
     ) -> tuple[Image.Image, int, int, int, int]:
         """
@@ -324,7 +345,11 @@ class SmartResizerV2:
                 scaled_height = target_height
                 scaled_width = max(1, int(target_height * original_ar))
             resized_img = pil_img.resize((scaled_width, scaled_height), pil_resample)
-            background = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+            background = Image.new(
+                "RGB",
+                (target_width, target_height),
+                PAD_RGB.get(pad_colour, PAD_RGB["Black"]),
+            )
             paste_x = (target_width - scaled_width) // 2
             paste_y = (target_height - scaled_height) // 2
             background.paste(resized_img, (paste_x, paste_y))
@@ -425,9 +450,10 @@ class SmartResizerV2:
         return mask
 
     @staticmethod
-    def _blend_mask_as_white_overlay(
+    def _blend_mask_as_colour_overlay(
         image: torch.Tensor,
         mask: torch.Tensor,
+        pad_colour: str,
         strength: float = 1.0,
     ) -> torch.Tensor:
         image = image.to(dtype=torch.float32)
@@ -448,8 +474,14 @@ class SmartResizerV2:
             ).squeeze(1)
         m = m.to(device=image.device)
         m4 = m.unsqueeze(-1).expand(b, h, w, c)
-        white = torch.ones_like(image)
-        out = image * (1.0 - strength * m4) + white * (strength * m4)
+        rgb = PAD_RGB.get(pad_colour, PAD_RGB["Black"])
+        colour = torch.tensor(
+            [channel / 255.0 for channel in rgb],
+            dtype=image.dtype,
+            device=image.device,
+        ).view(1, 1, 1, 3)
+        colour = colour.expand(b, h, w, c)
+        out = image * (1.0 - strength * m4) + colour * (strength * m4)
         return out.clamp(0.0, 1.0)
 
     @staticmethod
@@ -520,6 +552,7 @@ class SmartResizerV2:
         aspect_ratio: str = ASPECT_INPUT,
         multiple: int = 1,
         pad_image: bool = True,
+        pad_colour: str = "Black",
         resampling: str = "Lanczos",
         feathering: int = 40,
         overlay_mask: bool = False,
@@ -559,7 +592,12 @@ class SmartResizerV2:
             if pil_img.mode != "RGB":
                 pil_img = pil_img.convert("RGB")
             final_pil, px, py, cw, ch = self._letterbox_or_crop(
-                pil_img, target_w, target_h, pad_image, pil_resample
+                pil_img,
+                target_w,
+                target_h,
+                pad_image,
+                pad_colour,
+                pil_resample,
             )
             if paste_meta is None:
                 paste_meta = (px, py, cw, ch)
@@ -597,7 +635,9 @@ class SmartResizerV2:
             )
 
         if overlay_mask:
-            final_batch = self._blend_mask_as_white_overlay(final_batch, out_mask)
+            final_batch = self._blend_mask_as_colour_overlay(
+                final_batch, out_mask, pad_colour
+            )
 
         preview = self._save_preview(final_batch)
         return {

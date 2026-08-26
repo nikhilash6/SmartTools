@@ -65,6 +65,11 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(required["height"][1]["default"], 0)
         self.assertEqual(required["multiple"][1]["default"], 1)
         self.assertEqual(required["aspect_ratio"][1]["default"], rsz.ASPECT_INPUT)
+        self.assertEqual(required["pad_colour"][1]["default"], "Black")
+        self.assertEqual(
+            required["pad_colour"][0],
+            ["Black", "Grey", "Red", "Green", "White"],
+        )
 
 
 class SizingHelperTests(unittest.TestCase):
@@ -85,11 +90,11 @@ class SizingHelperTests(unittest.TestCase):
         )
         self.assertEqual((tw, th, ar), (640, 480, None))
 
-    def test_input_both_set_keeps_source(self):
+    def test_input_both_set_uses_proposed_canvas(self):
         tw, th, ar = rsz.SmartResizerV2._compute_target_size(
             640, 480, 1024, 768, rsz.ASPECT_INPUT, True
         )
-        self.assertEqual((tw, th, ar), (640, 480, None))
+        self.assertEqual((tw, th, ar), (1024, 768, None))
 
     def test_input_only_width_scales(self):
         tw, th, ar = rsz.SmartResizerV2._compute_target_size(
@@ -145,6 +150,88 @@ class ProcessTests(unittest.TestCase):
         )
         _image, w, h, _mask = out["result"]
         self.assertEqual((w, h), (50, 100))
+
+    def test_input_both_dims_pad_to_exact_canvas(self):
+        img = _rgb(160, 119)
+        out = _run(
+            self.node,
+            img,
+            width=70,
+            height=108,
+            aspect_ratio=rsz.ASPECT_INPUT,
+            pad_image=True,
+            multiple=1,
+        )
+        image, w, h, _mask = out["result"]
+        self.assertEqual((w, h), (70, 108))
+        self.assertEqual(tuple(image.shape[1:3]), (108, 70))
+
+    def test_input_both_dims_crop_to_exact_canvas(self):
+        img = _rgb(160, 119)
+        out = _run(
+            self.node,
+            img,
+            width=70,
+            height=108,
+            aspect_ratio=rsz.ASPECT_INPUT,
+            pad_image=False,
+            multiple=1,
+        )
+        image, w, h, _mask = out["result"]
+        self.assertEqual((w, h), (70, 108))
+        self.assertEqual(tuple(image.shape[1:3]), (108, 70))
+
+    def test_pad_colours_fill_letterbox_bars(self):
+        img = _rgb(40, 40, value=0.25)
+        expected = {
+            "Black": (0.0, 0.0, 0.0),
+            "Grey": (128 / 255, 128 / 255, 128 / 255),
+            "Red": (1.0, 0.0, 0.0),
+            "Green": (0.0, 1.0, 0.0),
+            "White": (1.0, 1.0, 1.0),
+        }
+        for colour, rgb in expected.items():
+            with self.subTest(colour=colour):
+                out = _run(
+                    self.node,
+                    img,
+                    width=80,
+                    height=40,
+                    aspect_ratio=rsz.ASPECT_INPUT,
+                    pad_image=True,
+                    pad_colour=colour,
+                    feathering=0,
+                    multiple=1,
+                )
+                image, w, h, _mask = out["result"]
+                self.assertEqual((w, h), (80, 40))
+                actual = tuple(float(v) for v in image[0, 20, 0])
+                for got, want in zip(actual, rgb):
+                    self.assertAlmostEqual(got, want, places=5)
+
+    def test_pad_colour_applies_to_mask_overlay(self):
+        img = _rgb(20, 20, value=0.25)
+        src_mask = torch.zeros((1, 20, 20), dtype=torch.float32)
+        src_mask[:, 5:15, 5:15] = 1.0
+        out = _run(
+            self.node,
+            img,
+            width=0,
+            height=0,
+            aspect_ratio=rsz.ASPECT_INPUT,
+            pad_image=True,
+            pad_colour="Red",
+            feathering=0,
+            overlay_mask=True,
+            multiple=1,
+            mask=src_mask,
+        )
+        image, _w, _h, out_mask = out["result"]
+        self.assertGreater(float(out_mask[0, 10, 10]), 0.99)
+        self.assertEqual(tuple(float(v) for v in image[0, 10, 10]), (1.0, 0.0, 0.0))
+        # Unmasked content remains unchanged.
+        for value in image[0, 0, 0]:
+            self.assertAlmostEqual(float(value), 0.25, places=2)
 
     def test_smart_zero_dims_pad(self):
         img = _rgb(48, 64)  # 64x48 landscape-ish → nearest square
