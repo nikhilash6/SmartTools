@@ -50,17 +50,29 @@ app.registerExtension({
                 } catch (_) {}
             }
 
-            // Show Size Mode first without changing saved widget order in Python.
-            const modeWidget = getWidget("size_mode");
-            const widthWidget = getWidget("width");
-            if (modeWidget && widthWidget && Array.isArray(this.widgets)) {
-                const modeIdx = this.widgets.indexOf(modeWidget);
-                const widthIdx = this.widgets.indexOf(widthWidget);
-                if (modeIdx > -1 && widthIdx > -1 && modeIdx !== widthIdx) {
-                    this.widgets.splice(modeIdx, 1);
-                    this.widgets.splice(widthIdx, 0, modeWidget);
+            function orderSizeWidgets() {
+                if (!Array.isArray(self.widgets)) return;
+                const ordered = [
+                    "size_mode",
+                    "width",
+                    "height",
+                    "megapixels",
+                    "shortest",
+                    "longest",
+                ]
+                    .map(getWidget)
+                    .filter(Boolean);
+                if (!ordered.length) return;
+                for (const widget of ordered) {
+                    const idx = self.widgets.indexOf(widget);
+                    if (idx !== -1) self.widgets.splice(idx, 1);
                 }
+                self.widgets.splice(0, 0, ...ordered);
             }
+
+            // Size Mode first, then the mode-specific fields in the Width slot.
+            orderSizeWidgets();
+            const modeWidget = getWidget("size_mode");
             if (modeWidget) {
                 const originalModeCallback = modeWidget.callback;
                 modeWidget.callback = function (value) {
@@ -74,6 +86,7 @@ app.registerExtension({
             const onConfigure = this.onConfigure;
             this.onConfigure = function () {
                 onConfigure?.apply(this, arguments);
+                orderSizeWidgets();
                 updateSizeModeVisibility();
             };
 
