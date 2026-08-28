@@ -185,6 +185,9 @@ function closePicker() {
     document.removeEventListener("pointerdown", _activePicker.outside, true);
     document.removeEventListener("mousedown", _activePicker.outside, true);
     document.removeEventListener("keydown", _activePicker.onKey, true);
+    if (_activePicker.onPointerUp) {
+        window.removeEventListener("pointerup", _activePicker.onPointerUp, true);
+    }
     _activePicker.menu.remove();
     _activePicker = null;
 }
@@ -277,7 +280,15 @@ function openLoraPicker(node, row, event) {
     menu.style.left = Math.max(8, left) + "px";
     menu.style.top = Math.max(8, top) + "px";
 
-    search.focus();
+    const focusSearch = () => {
+        if (_activePicker?.menu !== menu || !search.isConnected) return;
+        try {
+            app.canvas?.canvas?.blur?.();
+        } catch (e) {
+            /* ignore */
+        }
+        search.focus({ preventScroll: true });
+    };
 
     const outside = (e) => {
         if (!menu.contains(e.target)) closePicker();
@@ -291,12 +302,20 @@ function openLoraPicker(node, row, event) {
     // The canvas uses pointer events and preventDefault()s pointerdown, which
     // suppresses the synthetic mousedown; listen for pointerdown (plus mousedown
     // as a fallback) so clicking anywhere outside the popup closes it.
+    // It also steals focus on pointerup after the widget click, so refocus the
+    // search box after the current pointer cycle.
+    const onPointerUp = () => {
+        focusSearch();
+        window.removeEventListener("pointerup", onPointerUp, true);
+    };
+    window.addEventListener("pointerup", onPointerUp, true);
     setTimeout(() => {
         document.addEventListener("pointerdown", outside, true);
         document.addEventListener("mousedown", outside, true);
         document.addEventListener("keydown", onKey, true);
+        focusSearch();
     }, 0);
-    _activePicker = { menu, outside, onKey };
+    _activePicker = { menu, outside, onKey, onPointerUp };
 }
 
 function editStrength(node, row, event) {
@@ -401,6 +420,90 @@ function makeCopyButton(label, getText) {
     return btn;
 }
 
+const DESC_HTML_TAGS = new Set([
+    "A", "B", "BLOCKQUOTE", "BR", "CODE", "DIV", "EM",
+    "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "LI", "OL",
+    "P", "PRE", "S", "SMALL", "SPAN", "STRONG", "SUB", "SUP",
+    "TABLE", "TBODY", "TD", "TH", "THEAD", "TR", "U", "UL",
+]);
+const DESC_HTML_DROP = new Set([
+    "SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "LINK", "META", "SVG",
+]);
+
+function looksLikeHtml(text) {
+    return /<\s*(?:p|br|ul|ol|li|b|strong|i|em|u|s|h[1-6]|a|div|span|blockquote|code|pre|hr|table|thead|tbody|tr|th|td)\b/i.test(
+        String(text || "")
+    );
+}
+
+function descriptionHtml(description) {
+    if (description == null) return "";
+    if (typeof description === "string") return description;
+    if (typeof description === "object") {
+        const parts = [];
+        if (typeof description.model === "string" && description.model.trim()) {
+            parts.push(description.model.trim());
+        }
+        if (typeof description.version === "string" && description.version.trim()) {
+            parts.push(description.version.trim());
+        }
+        if (parts.length) return parts.join("");
+        return Object.values(description)
+            .filter((v) => typeof v === "string" && v.trim())
+            .join("");
+    }
+    return String(description);
+}
+
+function sanitizeDescriptionHtml(html) {
+    const template = document.createElement("template");
+    template.innerHTML = String(html || "");
+
+    const clean = (parent) => {
+        for (const child of [...parent.childNodes]) {
+            if (child.nodeType === Node.COMMENT_NODE) {
+                child.remove();
+                continue;
+            }
+            if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+            const tag = child.tagName;
+            if (DESC_HTML_DROP.has(tag)) {
+                child.remove();
+                continue;
+            }
+
+            clean(child);
+
+            if (!DESC_HTML_TAGS.has(tag)) {
+                while (child.firstChild) parent.insertBefore(child.firstChild, child);
+                child.remove();
+                continue;
+            }
+
+            for (const attr of [...child.attributes]) {
+                const name = attr.name.toLowerCase();
+                if (name.startsWith("on") || name === "style" || name === "src" || name === "srcset") {
+                    child.removeAttribute(attr.name);
+                    continue;
+                }
+                if (tag === "A" && (name === "href" || name === "title")) continue;
+                child.removeAttribute(attr.name);
+            }
+
+            if (tag === "A") {
+                const href = (child.getAttribute("href") || "").trim();
+                if (!/^(https?:|mailto:)/i.test(href)) child.removeAttribute("href");
+                child.setAttribute("target", "_blank");
+                child.setAttribute("rel", "noopener noreferrer");
+            }
+        }
+    };
+
+    clean(template.content);
+    return template.innerHTML;
+}
+
 function showInfoModal(title, data) {
     const existing = document.getElementById("smart_lora_info_modal");
     if (existing) existing.remove();
@@ -412,7 +515,7 @@ function showInfoModal(title, data) {
         ? [String(data.triggerWords)]
         : [];
     const triggerText = triggerWords.join(", ");
-    const description = data.description || "";
+    const description = descriptionHtml(data.description);
     const baseModel = data.baseModel || "";
 
     const overlay = document.createElement("div");
@@ -422,6 +525,40 @@ function showInfoModal(title, data) {
         background: rgba(0,0,0,0.6);
         display: flex; align-items: center; justify-content: center;
     `;
+
+    const descCss = document.createElement("style");
+    descCss.textContent = `
+        #smart_lora_info_modal .smart-lora-desc-html p { margin: 0.45em 0; }
+        #smart_lora_info_modal .smart-lora-desc-html p:first-child { margin-top: 0; }
+        #smart_lora_info_modal .smart-lora-desc-html p:last-child { margin-bottom: 0; }
+        #smart_lora_info_modal .smart-lora-desc-html ul,
+        #smart_lora_info_modal .smart-lora-desc-html ol { margin: 0.45em 0; padding-left: 1.4em; }
+        #smart_lora_info_modal .smart-lora-desc-html li { margin: 0.15em 0; }
+        #smart_lora_info_modal .smart-lora-desc-html h1,
+        #smart_lora_info_modal .smart-lora-desc-html h2,
+        #smart_lora_info_modal .smart-lora-desc-html h3,
+        #smart_lora_info_modal .smart-lora-desc-html h4,
+        #smart_lora_info_modal .smart-lora-desc-html h5,
+        #smart_lora_info_modal .smart-lora-desc-html h6 {
+            margin: 0.55em 0 0.25em; color: #b8e0d8; font-weight: 600;
+        }
+        #smart_lora_info_modal .smart-lora-desc-html h1 { font-size: 1.15em; }
+        #smart_lora_info_modal .smart-lora-desc-html h2 { font-size: 1.08em; }
+        #smart_lora_info_modal .smart-lora-desc-html h3 { font-size: 1.02em; }
+        #smart_lora_info_modal .smart-lora-desc-html h4,
+        #smart_lora_info_modal .smart-lora-desc-html h5,
+        #smart_lora_info_modal .smart-lora-desc-html h6 { font-size: 1em; }
+        #smart_lora_info_modal .smart-lora-desc-html a { color: #6cc6ff; }
+        #smart_lora_info_modal .smart-lora-desc-html pre {
+            margin: 0.45em 0; padding: 6px 8px; background: #071616;
+            border-radius: 4px; overflow-x: auto; white-space: pre-wrap;
+        }
+        #smart_lora_info_modal .smart-lora-desc-html code { font-size: 12px; }
+        #smart_lora_info_modal .smart-lora-desc-html blockquote {
+            margin: 0.45em 0; padding-left: 10px; border-left: 3px solid #2a5d54; color: #c5d8d4;
+        }
+    `;
+    overlay.appendChild(descCss);
 
     const dialog = document.createElement("div");
     dialog.style.cssText = `
@@ -465,9 +602,9 @@ function showInfoModal(title, data) {
         lab.textContent = labelText;
         lab.style.cssText = "font-size:12px;color:#9bbdb6;font-weight:bold;";
         top.appendChild(lab);
-        top.appendChild(makeCopyButton(labelText, () => valueText));
         wrap.appendChild(top);
 
+        let copySource = () => valueText;
         if (opts.link && valueText) {
             const a = document.createElement("a");
             a.href = valueText;
@@ -479,21 +616,30 @@ function showInfoModal(title, data) {
             wrap.appendChild(a);
         } else {
             const box = document.createElement("div");
-            box.textContent = valueText || "(none)";
+            const asHtml = opts.html && valueText && looksLikeHtml(valueText);
+            if (asHtml) {
+                box.className = "smart-lora-desc-html";
+                box.innerHTML = sanitizeDescriptionHtml(valueText);
+                copySource = () => (box.innerText || "").trim() || valueText;
+            } else {
+                box.textContent = valueText || "(none)";
+            }
             box.style.cssText = `
                 font-size:13px;color:${valueText ? "#ddd" : "#777"};
                 background:#0d1f1f;border:1px solid #2a5d54;border-radius:6px;
-                padding:8px 10px;white-space:pre-wrap;word-break:break-word;
+                padding:8px 10px;word-break:break-word;
+                ${asHtml ? "white-space:normal;" : "white-space:pre-wrap;"}
                 ${opts.scroll ? "overflow-y:auto;max-height:34vh;" : ""}
             `;
             wrap.appendChild(box);
         }
+        top.appendChild(makeCopyButton(labelText, copySource));
         return wrap;
     };
 
     dialog.appendChild(field("Link", url, { link: true }));
     dialog.appendChild(field("Trigger words", triggerText));
-    dialog.appendChild(field("Description", description, { scroll: true }));
+    dialog.appendChild(field("Description", description, { scroll: true, html: true }));
 
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);

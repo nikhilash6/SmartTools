@@ -289,10 +289,10 @@ class NodeTests(unittest.TestCase):
         ):
             out = node.save_video(images=frames, format="h264-mp4", autosave=False)
             self.assertEqual(enc.call_count, 1)
-            self.assertEqual(len(out["ui"]["gifs"]), 1)
-            self.assertEqual(out["ui"]["gifs"][0]["filename"], "preview_new.mp4")
-            self.assertEqual(out["ui"]["gifs"][0]["subfolder"], "SmartSaveVideo")
-            self.assertEqual(out["ui"]["gifs"][0]["type"], "temp")
+            self.assertEqual(len(out["ui"]["ssv_gifs"]), 1)
+            self.assertEqual(out["ui"]["ssv_gifs"][0]["filename"], "preview_new.mp4")
+            self.assertEqual(out["ui"]["ssv_gifs"][0]["subfolder"], "SmartSaveVideo")
+            self.assertEqual(out["ui"]["ssv_gifs"][0]["type"], "temp")
             self.assertTrue(out["result"][0].endswith("preview_new.mp4"))
 
     def test_ui_gifs_dual_with_original(self):
@@ -323,10 +323,10 @@ class NodeTests(unittest.TestCase):
                 inc_audio=True,
             )
             self.assertEqual(enc.call_count, 2)
-            self.assertEqual(len(out["ui"]["gifs"]), 2)
-            self.assertEqual(out["ui"]["gifs"][0]["filename"], "new.mp4")
-            self.assertEqual(out["ui"]["gifs"][1]["filename"], "orig.mp4")
-            self.assertEqual(out["ui"]["gifs"][1]["type"], "temp")
+            self.assertEqual(len(out["ui"]["ssv_gifs"]), 2)
+            self.assertEqual(out["ui"]["ssv_gifs"][0]["filename"], "new.mp4")
+            self.assertEqual(out["ui"]["ssv_gifs"][1]["filename"], "orig.mp4")
+            self.assertEqual(out["ui"]["ssv_gifs"][1]["type"], "temp")
             self.assertTrue(out["result"][0].endswith("new.mp4"))
             # Primary may mux audio; original compare encode is always silent.
             self.assertTrue(calls[0].get("inc_audio"))

@@ -62,11 +62,9 @@ app.registerExtension({
                 for (const name of FORMAT_OPTION_WIDGETS) {
                     setWidgetHidden(getWidget(name), !needed.has(name));
                 }
+                // Do not setSize(computeSize()) — that collapses the node to widget
+                // minimums. Preview leftover absorbs hidden/shown format fields.
                 try {
-                    if (typeof self.computeSize === "function") {
-                        const size = self.computeSize(self.size);
-                        if (Array.isArray(size)) self.setSize?.(size);
-                    }
                     app.graph?.setDirtyCanvas?.(true, true);
                 } catch (_) {}
             }
@@ -491,7 +489,9 @@ app.registerExtension({
                 saveBtn.disabled = !!autosaveWidget.value;
             }
 
-            // Interactive video preview: single player, or New | Original side-by-side synced.
+            // Same preview sizing as VHS VideoCombine:
+            // widget height = node width / video aspect ratio, then fitHeight
+            // snaps the node. Never size from leftover node height.
             const previewRoot = document.createElement("div");
             previewRoot.className = "smart_save_video_preview";
             previewRoot.style.cssText = "width:100%;";
@@ -501,7 +501,7 @@ app.registerExtension({
 
             function makePanel(labelText) {
                 const panel = document.createElement("div");
-                panel.style.cssText = "flex:1 1 0;min-width:0;display:flex;flex-direction:column;";
+                panel.style.cssText = "flex:1 1 0;min-width:0;";
                 const label = document.createElement("div");
                 label.textContent = labelText;
                 label.style.cssText =
@@ -531,6 +531,22 @@ app.registerExtension({
             let syncing = false;
             const SYNC_EPS = 0.05;
 
+            let fittingHeight = false;
+            function fitHeight() {
+                if (fittingHeight) return;
+                fittingHeight = true;
+                try {
+                    const w = self.size?.[0];
+                    if (!(w > 0) || typeof self.computeSize !== "function") return;
+                    const next = self.computeSize([w, self.size[1]]);
+                    if (Array.isArray(next)) self.setSize([w, next[1]]);
+                    app.graph?.setDirtyCanvas?.(true, true);
+                } catch (_) {
+                } finally {
+                    fittingHeight = false;
+                }
+            }
+
             const previewWidget = this.addDOMWidget("videopreview", "preview", previewRoot, {
                 serialize: false,
                 hideOnZoom: false,
@@ -539,45 +555,28 @@ app.registerExtension({
             previewWidget.origVideoEl = origVideoEl;
             previewWidget.aspectRatio = null;
             previewWidget.computeSize = function (width) {
-                if (this.aspectRatio && videoEl.src && !videoEl.hidden) {
-                    const usable = Math.max(40, self.size[0] - 20);
+                if (this.aspectRatio && videoEl.src) {
+                    const usable = Math.max(40, (self.size?.[0] || width || 300) - 20);
                     const colW = compareMode ? usable / 2 : usable;
-                    const height = colW / this.aspectRatio + (compareMode ? 24 : 10);
-                    this.computedHeight = Math.max(40, height);
-                    return [width, this.computedHeight];
+                    const height = colW / this.aspectRatio + (compareMode ? 36 : 28);
+                    this.computedHeight = height;
+                    return [width, height];
                 }
+                this.computedHeight = 0;
                 return [width, -4];
             };
 
-            function refreshPreviewSize() {
-                let ar = null;
+            function applyAspectFromVideo() {
                 if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
-                    ar = videoEl.videoWidth / videoEl.videoHeight;
+                    previewWidget.aspectRatio = videoEl.videoWidth / videoEl.videoHeight;
+                    fitHeight();
                 }
-                if (
-                    compareMode &&
-                    origVideoEl.videoWidth > 0 &&
-                    origVideoEl.videoHeight > 0
-                ) {
-                    const origAr = origVideoEl.videoWidth / origVideoEl.videoHeight;
-                    // Use the taller relative aspect so neither column is clipped short.
-                    ar = ar == null ? origAr : Math.min(ar, origAr);
-                }
-                previewWidget.aspectRatio = ar;
-                try {
-                    const size = self.computeSize?.(self.size);
-                    if (Array.isArray(size)) self.setSize?.(size);
-                    app.graph?.setDirtyCanvas?.(true, true);
-                } catch (_) {}
             }
+            videoEl.addEventListener("loadedmetadata", applyAspectFromVideo);
+            origVideoEl.addEventListener("loadedmetadata", applyAspectFromVideo);
 
-            videoEl.addEventListener("loadedmetadata", refreshPreviewSize);
-            origVideoEl.addEventListener("loadedmetadata", refreshPreviewSize);
-            videoEl.addEventListener("error", () => {
-                if (!compareMode) previewWidget.aspectRatio = null;
-                refreshPreviewSize();
-            });
-            origVideoEl.addEventListener("error", refreshPreviewSize);
+            this.setSizeForImage = function () {};
+            this.onDrawBackground = function () {};
 
             function setVideoSrc(el, info) {
                 if (!info?.filename) {
@@ -663,6 +662,7 @@ app.registerExtension({
                     setVideoSrc(videoEl, null);
                     setVideoSrc(origVideoEl, null);
                     previewWidget.aspectRatio = null;
+                    fitHeight();
                     return;
                 }
                 setVideoSrc(videoEl, info);
@@ -692,19 +692,26 @@ app.registerExtension({
             this.currentVideo = null;
             const _origOnExecuted = this.onExecuted;
             this.onExecuted = function (output) {
-                // Prefer animated video payload; ignore still-image node previews.
+                // Prefer our video widget; ignore still-image / default gif previews.
                 this.imgs = undefined;
+                this.images = undefined;
                 this.imageIndex = null;
+                this.animatedImages = false;
+                this.previewMediaType = undefined;
+                this.videoContainer = undefined;
                 _origOnExecuted?.call(this, output);
                 this.imgs = undefined;
+                this.images = undefined;
                 this.imageIndex = null;
+                this.animatedImages = false;
+                this.previewMediaType = undefined;
+                this.videoContainer = undefined;
 
-                const gifs = output?.gifs || output?.videos || [];
+                const gifs = output?.ssv_gifs || output?.gifs || output?.videos || [];
                 const info = gifs[0] || null;
                 const originalInfo = gifs[1] || null;
                 this.currentVideo = info;
                 setPreviewSource(info, originalInfo);
-                // New encode resets duplicate-save tracking unless autosave already wrote it.
                 if (info?.filename && isAutoSave()) {
                     markVideoSaved(info);
                 } else {

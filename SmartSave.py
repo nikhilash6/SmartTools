@@ -39,6 +39,98 @@ def png_metadata_like_save_image(prompt=None, extra_pnginfo=None):
             metadata.add_text(key, json.dumps(extra_pnginfo[key]))
     return metadata
 
+
+def extract_prompt_and_seed(prompt):
+    """Best-effort CLIP text + sampler seed from a Comfy API prompt graph."""
+    texts = []
+    seeds = []
+    if not isinstance(prompt, dict):
+        return "", None
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        class_type = str(node.get("class_type") or "")
+        text = inputs.get("text")
+        if isinstance(text, str) and text.strip():
+            if (
+                "CLIPText" in class_type
+                or class_type.endswith("TextEncode")
+                or "Prompt" in class_type
+                or class_type == "CLIPTextEncode"
+            ):
+                texts.append(text.strip())
+        for key in ("seed", "noise_seed"):
+            value = inputs.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                seeds.append(int(value))
+    return (texts[0] if texts else ""), (seeds[0] if seeds else None)
+
+
+def workflow_exif(prompt=None, extra_pnginfo=None):
+    """EXIF payload ComfyUI reads from WebP/AVIF on drag-and-drop."""
+    if args.disable_metadata:
+        return None
+    if prompt is None and not extra_pnginfo:
+        return None
+    exif = Image.Exif()
+    if prompt is not None:
+        exif[0x0110] = "prompt:" + json.dumps(prompt)
+    if extra_pnginfo is not None:
+        tag = 0x010F
+        for key, value in extra_pnginfo.items():
+            exif[tag] = f"{key}:{json.dumps(value)}"
+            tag -= 1
+    return exif
+
+
+def jpeg_exif(prompt=None, extra_pnginfo=None):
+    """Human-readable prompt + seed for JPEG EXIF (not drag-and-drop workflow)."""
+    if args.disable_metadata:
+        return None
+    text, seed = extract_prompt_and_seed(prompt)
+    if not text and seed is None:
+        return None
+    exif = Image.Exif()
+    if text:
+        exif[0x010E] = text[:30000]
+    lines = []
+    if text:
+        lines.append(f"Prompt: {text}")
+    if seed is not None:
+        lines.append(f"Seed: {seed}")
+        exif[0x013B] = f"Seed: {seed}"
+    payload = "\n".join(lines)
+    exif[0x9286] = b"ASCII\x00\x00\x00" + payload.encode("utf-8", "replace")
+    return exif
+
+
+def metadata_from_pil_info(img):
+    """Recover prompt / extra_pnginfo from a PNG opened by Pillow."""
+    info = getattr(img, "info", None) or {}
+    recovered_prompt = None
+    extra = {}
+    raw_prompt = info.get("prompt")
+    if isinstance(raw_prompt, str):
+        try:
+            recovered_prompt = json.loads(raw_prompt)
+        except Exception:
+            recovered_prompt = None
+    for key, value in info.items():
+        if key == "prompt" or not isinstance(value, str):
+            continue
+        if not value[:1] in "{[":
+            continue
+        try:
+            extra[key] = json.loads(value)
+        except Exception:
+            continue
+    return recovered_prompt, (extra or None)
+
 def resolve_output_dir(filename_prefix, base_dir):
     """Parse filename_prefix into (out_dir, base_name, out_subfolder).
 
@@ -117,22 +209,60 @@ def get_pil_format_and_ext(fmt):
     fmt = fmt.upper()
     if fmt == "JPEG":
         return "JPEG", ".jpg"
-    elif fmt == "WEBP":
+    if fmt == "WEBP":
         return "WEBP", ".webp"
-    else:
-        return "PNG", ".png"
+    if fmt == "AVIF":
+        return "AVIF", ".avif"
+    return "PNG", ".png"
 
 
-def save_pil_image(img, dst_path, fmt, quality, metadata=None, compress_level=4):
+def save_pil_image(
+    img,
+    dst_path,
+    fmt,
+    quality,
+    metadata=None,
+    compress_level=4,
+    prompt=None,
+    extra_pnginfo=None,
+):
     pil_fmt, _ = get_pil_format_and_ext(fmt)
     if pil_fmt == "PNG":
-        img.save(dst_path, pnginfo=metadata, compress_level=compress_level)
-    elif pil_fmt == "JPEG":
+        pnginfo = metadata
+        if pnginfo is None:
+            pnginfo = png_metadata_like_save_image(prompt, extra_pnginfo)
+        img.save(dst_path, pnginfo=pnginfo, compress_level=compress_level)
+        return
+
+    if img.mode not in ("RGB", "L"):
+        if pil_fmt == "JPEG" or img.mode not in ("RGBA", "RGB"):
+            img = img.convert("RGB")
+
+    if pil_fmt == "JPEG":
         if img.mode == "RGBA":
             img = img.convert("RGB")
-        img.save(dst_path, format="JPEG", quality=quality)
-    elif pil_fmt == "WEBP":
-        img.save(dst_path, format="WEBP", quality=quality)
+        kwargs = {"format": "JPEG", "quality": int(quality)}
+        exif = jpeg_exif(prompt, extra_pnginfo)
+        if exif is not None:
+            kwargs["exif"] = exif
+        img.save(dst_path, **kwargs)
+        return
+
+    if pil_fmt in ("WEBP", "AVIF"):
+        kwargs = {"format": pil_fmt, "quality": int(quality)}
+        exif = workflow_exif(prompt, extra_pnginfo)
+        if exif is not None:
+            kwargs["exif"] = exif
+        try:
+            img.save(dst_path, **kwargs)
+        except Exception as exc:
+            raise ValueError(
+                f"Smart Save: could not write {pil_fmt} ({exc}). "
+                "Install Pillow with AVIF support if saving AVIF."
+            ) from exc
+        return
+
+    img.save(dst_path)
 
 
 # ─── Favorite Folders storage ────────────────────────────────────────────────
@@ -186,22 +316,33 @@ async def save_it_handler(request):
 
         # Open the source image
         img = Image.open(src_path)
+        pr = data.get("prompt")
+        ex = data.get("extra_pnginfo")
+        if pr is None and ex is None:
+            recovered_prompt, recovered_extra = metadata_from_pil_info(img)
+            pr = recovered_prompt
+            ex = recovered_extra
 
         metadata = None
-        if fmt.upper() == "PNG":
-            if not args.disable_metadata:
-                if "prompt" in data or "extra_pnginfo" in data:
-                    pr = data["prompt"] if "prompt" in data else None
-                    ex = data["extra_pnginfo"] if "extra_pnginfo" in data else None
-                    metadata = png_metadata_like_save_image(pr, ex)
-                else:
-                    metadata = PngInfo()
-                    if hasattr(img, "info"):
-                        for key, value in img.info.items():
-                            if isinstance(key, str) and isinstance(value, str):
-                                metadata.add_text(key, value)
+        if fmt.upper() == "PNG" and not args.disable_metadata:
+            if pr is not None or ex is not None:
+                metadata = png_metadata_like_save_image(pr, ex)
+            else:
+                metadata = PngInfo()
+                if hasattr(img, "info"):
+                    for key, value in img.info.items():
+                        if isinstance(key, str) and isinstance(value, str):
+                            metadata.add_text(key, value)
 
-        save_pil_image(img, dst_path, fmt, quality, metadata=metadata)
+        save_pil_image(
+            img,
+            dst_path,
+            fmt,
+            quality,
+            metadata=metadata,
+            prompt=pr,
+            extra_pnginfo=ex,
+        )
 
         return web.Response(status=200, text=f"Saved to {dst_path}")
 
@@ -516,9 +657,9 @@ class SmartSave:
                     "default": "ComfyUI",
                     "tooltip": "Prefix for the saved file. Use subfolder/name e.g. MyFolder/MyImage",
                 }),
-                "format": (["PNG", "JPEG", "WEBP"], {
+                "format": (["PNG", "JPEG", "WEBP", "AVIF"], {
                     "default": "PNG",
-                    "tooltip": "Image format to save as.",
+                    "tooltip": "Image format to save as. PNG/WebP/AVIF embed the ComfyUI workflow for drag-and-drop. JPEG stores prompt and seed in EXIF.",
                 }),
                 "quality": ("INT", {
                     "default": 95,
@@ -526,7 +667,7 @@ class SmartSave:
                     "max": 100,
                     "step": 1,
                     "display": "slider",
-                    "tooltip": "Quality for JPEG and WebP (1-100). Ignored for PNG.",
+                    "tooltip": "Quality for JPEG, WebP, and AVIF (1-100). Ignored for PNG.",
                 }),
                 "use_timestamp": ("BOOLEAN", {
                     "default": False,
@@ -635,9 +776,16 @@ class SmartSave:
                     self.last_prompt_id = current_prompt_id
                     dst_path, new_filename = next_available_path(out_dir, base_name, use_timestamp, ext)
                     
-                    save_pil_image(img, dst_path, format, quality,
-                                   metadata=(metadata if format == "PNG" else None),
-                                   compress_level=self.compress_level)
+                    save_pil_image(
+                        img,
+                        dst_path,
+                        format,
+                        quality,
+                        metadata=metadata,
+                        compress_level=self.compress_level,
+                        prompt=prompt,
+                        extra_pnginfo=extra_pnginfo,
+                    )
                     # If the saved file is outside the ComfyUI output dir (for
                     # example on another drive), create a temp preview copy and
                     # return that as a `temp` entry so the UI can display it.
@@ -651,9 +799,16 @@ class SmartSave:
                                 shutil.copy(dst_path, temp_dst)
                             except Exception:
                                 # Fallback: re-save from PIL Image if copy fails
-                                save_pil_image(img, temp_dst, format, quality,
-                                               metadata=(metadata if format == "PNG" else None),
-                                               compress_level=self.compress_level)
+                                save_pil_image(
+                                    img,
+                                    temp_dst,
+                                    format,
+                                    quality,
+                                    metadata=metadata,
+                                    compress_level=self.compress_level,
+                                    prompt=prompt,
+                                    extra_pnginfo=extra_pnginfo,
+                                )
                             results.append({
                                 "filename": new_filename,
                                 "subfolder": "",

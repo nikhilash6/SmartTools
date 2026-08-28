@@ -85,9 +85,13 @@ The node shows **Input W×H**, **Output W×H**, and a preview of the result (`we
 
 Same PNG output and metadata behaviour as ComfyUI’s built-in **Save Image** (`folder_paths.get_save_image_path`, `%batch_num%`, optional workflow metadata in PNG), but files are written to the **output** folder only when you click **Save Image** on the node.
 
+**Formats**
+- **PNG / WebP / AVIF:** embed `prompt` + `workflow` so drag-and-drop onto ComfyUI restores the graph (WebP/AVIF use the same EXIF `prompt:` / `workflow:` tags ComfyUI reads).
+- **JPEG:** EXIF stores the CLIP **prompt** (`ImageDescription` / `UserComment`) and **seed** (`Artist` / `UserComment`). JPEG cannot restore a workflow on drop.
+
 1. **Queue the workflow** at least once so the node can cache the current image batch (keyed by the graph node id).
-2. The node shows a **temp** video preview under `temp/SmartSaveVideo/` so you can review playback without writing to the final output path.
-3. Click **Save Image** to write PNGs to the output directory.
+2. The node shows a **temp** preview so you can review the image without writing to the final output path.
+3. Click **Save Image** to write the selected format to the output directory.
 
 Requires the included **web** extension (`web/smart_save.js`); restart ComfyUI after installing or updating this pack.
 
@@ -142,7 +146,7 @@ Applies two **independent** lists of **model-only** LoRAs in one node: **high** 
 
 - a **name** field (click to open a searchable LoRA picker),
 - a **strength** box (click to type a value; negative values allowed),
-- an **info** button (`i`) that, when a sidecar JSON exists next to the LoRA file (same name, `.json` extension), opens a modal showing the **link**, **trigger words**, and **description**, each copyable to the clipboard,
+- an **info** button (`i`) that, when a sidecar JSON exists next to the LoRA file (same name, `.json` extension), opens a modal showing the **link**, **trigger words**, and **description**. Description may be a string or `{ "model": "...", "version": "..." }`; both HTML fields are shown in the same box, and basic tags such as `<p>`, `<ul>`, `<li>` are rendered. Each field is copyable to the clipboard,
 - an **enable** toggle, and
 - a **delete** button (`✕`).
 

@@ -726,7 +726,7 @@ class SmartSaveVideo:
         extra_pnginfo=None,
     ):
         if images is None or (isinstance(images, torch.Tensor) and images.numel() == 0):
-            return {"ui": {"gifs": []}, "result": ("",)}
+            return {"ui": {"ssv_gifs": []}, "result": ("",)}
 
         temp_dir = folder_paths.get_temp_directory()
         temp_prefix = "smart_save_video_preview" + self.prefix_append
@@ -835,10 +835,10 @@ class SmartSaveVideo:
                 }
             )
 
-        # Use `gifs` for Comfy/VHS-compatible animated preview payload naming.
-        # gifs[0] is always the saveable/new video; gifs[1] is original compare-only.
+        # Custom key so ComfyUI does not apply default animated-preview node sizing.
+        # ssv_gifs[0] is always the saveable/new video; ssv_gifs[1] is original compare-only.
         return {
-            "ui": {"gifs": gifs},
+            "ui": {"ssv_gifs": gifs},
             "result": (final_path,),
         }
 
