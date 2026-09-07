@@ -27,8 +27,8 @@ class SmartLoad(LoadImage):
     CATEGORY = "slikvik/Image"
     DISPLAY_NAME = "Smart Load"
     DESCRIPTION = (
-        "Loads an image like Load Image; use Crop to restrict the IMAGE and MASK outputs "
-        "to a rectangle."
+        "Loads an image like Load Image. Crop writes a cropped copy as the node's image "
+        "(preview and workflow restore); Clear Crop brings back the stored original."
     )
 
     def load_image(self, image, crop_x, crop_y, crop_w, crop_h):

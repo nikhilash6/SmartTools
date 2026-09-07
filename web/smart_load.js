@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 const HANDLE = 10;
 const MIN_SIZE = 10;
@@ -76,7 +77,10 @@ function squareResizeFromDrag(mode, s, dx, dy) {
 }
 
 function parseImageWidget(widget) {
-    const v = widget?.value;
+    return parseImageValue(widget?.value);
+}
+
+function parseImageValue(v) {
     if (v && typeof v === "object") {
         return {
             filename: v.filename ?? v.name ?? "",
@@ -84,7 +88,133 @@ function parseImageWidget(widget) {
             type: v.type ?? "input",
         };
     }
-    return { filename: String(v ?? ""), subfolder: "", type: "input" };
+    const s = String(v ?? "");
+    if (!s) return { filename: "", subfolder: "", type: "input" };
+    const slash = s.replace(/\\/g, "/").lastIndexOf("/");
+    if (slash >= 0) {
+        return {
+            filename: s.slice(slash + 1),
+            subfolder: s.slice(0, slash),
+            type: "input",
+        };
+    }
+    return { filename: s, subfolder: "", type: "input" };
+}
+
+function imageValueString(meta) {
+    if (!meta?.filename) return "";
+    return meta.subfolder ? `${meta.subfolder}/${meta.filename}` : meta.filename;
+}
+
+function imageKey(meta) {
+    return `${meta?.type || "input"}|${meta?.subfolder || ""}|${meta?.filename || ""}`;
+}
+
+function croppedFilename(origMeta) {
+    const raw = origMeta?.filename || "image.png";
+    const dot = raw.lastIndexOf(".");
+    const base = dot >= 0 ? raw.slice(0, dot) : raw;
+    return base.endsWith("_smartcrop") ? `${base}_v.png` : `${base}_smartcrop.png`;
+}
+
+function getStoredOriginal(node) {
+    return node.properties?.smartload_original || null;
+}
+
+function getStoredCrop(node) {
+    return node.properties?.smartload_crop || null;
+}
+
+function storeOriginalAndCrop(node, originalMeta, sel, croppedMeta) {
+    node.properties = node.properties || {};
+    node.properties.smartload_original = { ...originalMeta };
+    node.properties.smartload_crop = {
+        x: Math.round(sel.x),
+        y: Math.round(sel.y),
+        w: Math.round(sel.w),
+        h: Math.round(sel.h),
+    };
+    if (croppedMeta) node.properties.smartload_cropped = { ...croppedMeta };
+}
+
+function clearStoredCrop(node) {
+    if (!node.properties) return;
+    delete node.properties.smartload_original;
+    delete node.properties.smartload_crop;
+    delete node.properties.smartload_cropped;
+}
+
+function resetCropWidgets(node) {
+    setCropFromSelection(node, { x: 0, y: 0, w: 0, h: 0 });
+}
+
+function addComboValue(widget, value) {
+    if (!widget || !value) return;
+    const opts = widget.options;
+    if (!opts) return;
+    if (Array.isArray(opts.values) && !opts.values.includes(value)) {
+        opts.values.push(value);
+    }
+}
+
+function setImageWidget(node, imageWidget, meta) {
+    const value = imageValueString(meta);
+    addComboValue(imageWidget, value);
+    imageWidget.value = value;
+    try {
+        imageWidget.callback?.(value);
+    } catch (_) {}
+    app.graph?.setDirtyCanvas?.(true, true);
+}
+
+function refreshNodePreview(node) {
+    const imageWidget = node.widgets?.find((w) => w.name === "image");
+    const url = buildViewUrl(parseImageWidget(imageWidget));
+    if (!url) return;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+        node.imgs = [img];
+        node.imageIndex = 0;
+        app.graph?.setDirtyCanvas?.(true, true);
+    };
+    img.src = url;
+}
+
+function cropImageToBlob(img, sel) {
+    const x = Math.round(sel.x);
+    const y = Math.round(sel.y);
+    const w = Math.max(1, Math.round(sel.w));
+    const h = Math.max(1, Math.round(sel.h));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { alpha: true });
+    ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error("Could not encode cropped image."));
+        }, "image/png");
+    });
+}
+
+async function uploadCroppedImage(origMeta, blob) {
+    const name = croppedFilename(origMeta);
+    const fd = new FormData();
+    fd.append("image", blob, name);
+    fd.append("type", "input");
+    fd.append("overwrite", "true");
+    const resp = await api.fetchApi("/upload/image", { method: "POST", body: fd });
+    if (!resp.ok) {
+        throw new Error(`Upload failed (${resp.status}): ${await resp.text()}`);
+    }
+    const data = await resp.json();
+    return {
+        filename: data.name || name,
+        subfolder: data.subfolder || "",
+        type: data.type || "input",
+    };
 }
 
 function buildViewUrl(meta) {
@@ -139,8 +269,9 @@ function readSelectionFromWidgets(node, imgW, imgH) {
 }
 
 function openCropModal(node, imageWidget) {
-    const meta = parseImageWidget(imageWidget);
-    const url = buildViewUrl(meta);
+    const current = parseImageWidget(imageWidget);
+    const original = getStoredOriginal(node) || current;
+    const url = buildViewUrl(original);
     if (!url) {
         alert("Select an image first.");
         return;
@@ -511,9 +642,34 @@ function openCropModal(node, imageWidget) {
 
     btnFit.addEventListener("click", fitFullImage);
     btnReset.addEventListener("click", resetSelectionMargin);
-    btnApply.addEventListener("click", () => {
+    btnApply.addEventListener("click", async () => {
         normalizeSel();
-        setCropFromSelection(node, sel);
+        const isFull =
+            Math.round(sel.x) <= 0 &&
+            Math.round(sel.y) <= 0 &&
+            Math.round(sel.w) >= imgW &&
+            Math.round(sel.h) >= imgH;
+        if (isFull && getStoredOriginal(node)?.filename) {
+            clearCropToOriginal(node);
+            cleanup();
+            return;
+        }
+        btnApply.disabled = true;
+        try {
+            const blob = await cropImageToBlob(img, sel);
+            node.__ssApplyingCrop = true;
+            const cropped = await uploadCroppedImage(original, blob);
+            storeOriginalAndCrop(node, original, sel, cropped);
+            resetCropWidgets(node);
+            setImageWidget(node, imageWidget, cropped);
+            refreshNodePreview(node);
+        } catch (e) {
+            alert(e?.message || String(e));
+            btnApply.disabled = false;
+            return;
+        } finally {
+            node.__ssApplyingCrop = false;
+        }
         cleanup();
     });
     btnCancel.addEventListener("click", cleanup);
@@ -534,8 +690,17 @@ function openCropModal(node, imageWidget) {
         imgW = im.naturalWidth;
         imgH = im.naturalHeight;
 
+        const stored = getStoredCrop(node);
         const fromWidgets = readSelectionFromWidgets(node, imgW, imgH);
-        if (fromWidgets) {
+        if (stored?.w > 0 && stored?.h > 0) {
+            sel = {
+                x: stored.x,
+                y: stored.y,
+                w: stored.w,
+                h: stored.h,
+            };
+            normalizeSel();
+        } else if (fromWidgets && (fromWidgets.w !== imgW || fromWidgets.h !== imgH)) {
             sel = fromWidgets;
             normalizeSel();
         } else {
@@ -563,26 +728,44 @@ function attachImageSync(node) {
     const imageWidget = node.widgets?.find((w) => w.name === "image");
     if (!imageWidget) return;
 
-    const onImageMaybeChanged = () => {
-        const url = buildViewUrl(parseImageWidget(imageWidget));
-        if (!url) return;
-        const probe = new Image();
-        probe.crossOrigin = "anonymous";
-        probe.onload = () => {
-            const iw = probe.naturalWidth;
-            const ih = probe.naturalHeight;
-            setCropFromSelection(node, { x: 0, y: 0, w: iw, h: ih });
-        };
-        probe.src = url;
-    };
-
     const orig = imageWidget.callback;
     imageWidget.callback = function () {
         orig?.apply(this, arguments);
-        onImageMaybeChanged();
+        if (node.__ssApplyingCrop) return;
+        const next = parseImageWidget(imageWidget);
+        const cropped = node.properties?.smartload_cropped;
+        if (cropped && imageKey(cropped) === imageKey(next)) {
+            refreshNodePreview(node);
+            return;
+        }
+        const storedOrig = getStoredOriginal(node);
+        if (storedOrig && imageKey(storedOrig) === imageKey(next)) {
+            clearStoredCrop(node);
+            resetCropWidgets(node);
+            refreshNodePreview(node);
+            return;
+        }
+        if (storedOrig) {
+            clearStoredCrop(node);
+            resetCropWidgets(node);
+        }
+        refreshNodePreview(node);
     };
+}
 
-    queueMicrotask(onImageMaybeChanged);
+function clearCropToOriginal(node) {
+    const imageWidget = node.widgets?.find((w) => w.name === "image");
+    const original = getStoredOriginal(node);
+    if (!imageWidget || !original?.filename) return;
+    node.__ssApplyingCrop = true;
+    try {
+        clearStoredCrop(node);
+        resetCropWidgets(node);
+        setImageWidget(node, imageWidget, original);
+        refreshNodePreview(node);
+    } finally {
+        node.__ssApplyingCrop = false;
+    }
 }
 
 app.registerExtension({
@@ -614,8 +797,35 @@ app.registerExtension({
             cropWidget.label = "Crop...";
             cropWidget.serialize = false;
 
+            const clearCropWidget = node.addWidget(
+                "button",
+                "smartload_crop_clear",
+                "clear",
+                () => {
+                    if (!getStoredOriginal(node)?.filename) {
+                        resetCropWidgets(node);
+                        refreshNodePreview(node);
+                        return;
+                    }
+                    clearCropToOriginal(node);
+                },
+                {
+                    serialize: false,
+                    canvasOnly: true,
+                }
+            );
+            clearCropWidget.label = "Clear Crop";
+            clearCropWidget.serialize = false;
+
             attachImageSync(node);
             queueMicrotask(() => hideIntWidgets(node));
+        };
+
+        const onConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            onConfigure?.apply(this, arguments);
+            hideIntWidgets(this);
+            queueMicrotask(() => refreshNodePreview(this));
         };
     },
 });
