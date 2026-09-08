@@ -110,11 +110,13 @@ function imageKey(meta) {
     return `${meta?.type || "input"}|${meta?.subfolder || ""}|${meta?.filename || ""}`;
 }
 
-function croppedFilename(origMeta) {
+function croppedFilename(origMeta, node) {
     const raw = origMeta?.filename || "image.png";
     const dot = raw.lastIndexOf(".");
     const base = dot >= 0 ? raw.slice(0, dot) : raw;
-    return base.endsWith("_smartcrop") ? `${base}_v.png` : `${base}_smartcrop.png`;
+    const stem = base.endsWith("_smartcrop") ? `${base}_v` : `${base}_smartcrop`;
+    const id = String(node?.id ?? "x").replace(/[^\w.-]+/g, "_");
+    return `${stem}_${id}.png`;
 }
 
 function getStoredOriginal(node) {
@@ -199,8 +201,8 @@ function cropImageToBlob(img, sel) {
     });
 }
 
-async function uploadCroppedImage(origMeta, blob) {
-    const name = croppedFilename(origMeta);
+async function uploadCroppedImage(origMeta, blob, node) {
+    const name = croppedFilename(origMeta, node);
     const fd = new FormData();
     fd.append("image", blob, name);
     fd.append("type", "input");
@@ -658,7 +660,7 @@ function openCropModal(node, imageWidget) {
         try {
             const blob = await cropImageToBlob(img, sel);
             node.__ssApplyingCrop = true;
-            const cropped = await uploadCroppedImage(original, blob);
+            const cropped = await uploadCroppedImage(original, blob, node);
             storeOriginalAndCrop(node, original, sel, cropped);
             resetCropWidgets(node);
             setImageWidget(node, imageWidget, cropped);
