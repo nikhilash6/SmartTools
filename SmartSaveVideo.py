@@ -30,68 +30,16 @@ from comfy.cli_args import args as comfy_args
 from comfy.utils import ProgressBar
 
 from .SmartSave import next_available_path, resolve_output_dir
+from . import smart_ffmpeg
 
 logger = logging.getLogger(__name__)
 
 _FORMATS_DIR = Path(__file__).with_name("video_formats")
-_ENCODE_ARGS = ("utf-8", "backslashreplace")
-_FFMPEG_UNSET = object()
-_FFMPEG_PATH: str | None | object = _FFMPEG_UNSET
-
-
-def _ffmpeg_candidate_ok(path: str) -> bool:
-    if not path or not os.path.isfile(path):
-        return False
-    try:
-        subprocess.run(
-            [path, "-version"],
-            capture_output=True,
-            check=True,
-            timeout=15,
-        )
-        return True
-    except Exception:
-        return False
+_ENCODE_ARGS = smart_ffmpeg.ENCODE_ARGS
 
 
 def _resolve_ffmpeg() -> str:
-    global _FFMPEG_PATH
-    if _FFMPEG_PATH is not _FFMPEG_UNSET:
-        if _FFMPEG_PATH is None:
-            raise RuntimeError(
-                "SmartSaveVideo: ffmpeg is required and could not be found. "
-                "Install imageio-ffmpeg (`pip install imageio-ffmpeg`), place ffmpeg "
-                "next to ComfyUI, or add ffmpeg to PATH."
-            )
-        return str(_FFMPEG_PATH)
-
-    paths: list[str] = []
-    forced = os.environ.get("SMART_SAVE_VIDEO_FFMPEG") or os.environ.get("VHS_FORCE_FFMPEG_PATH")
-    if forced:
-        paths.append(forced)
-    try:
-        from imageio_ffmpeg import get_ffmpeg_exe
-
-        paths.append(get_ffmpeg_exe())
-    except Exception:
-        pass
-    which = shutil.which("ffmpeg")
-    if which:
-        paths.append(which)
-    for name in ("ffmpeg.exe", "ffmpeg"):
-        if os.path.isfile(name):
-            paths.append(os.path.abspath(name))
-
-    resolved = next((path for path in paths if _ffmpeg_candidate_ok(path)), None)
-    _FFMPEG_PATH = resolved
-    if _FFMPEG_PATH is None:
-        raise RuntimeError(
-            "SmartSaveVideo: ffmpeg is required and could not be found. "
-            "Install imageio-ffmpeg (`pip install imageio-ffmpeg`), place ffmpeg "
-            "next to ComfyUI, or add ffmpeg to PATH."
-        )
-    logger.info("SmartSaveVideo: using ffmpeg at %s", _FFMPEG_PATH)
-    return str(_FFMPEG_PATH)
+    return smart_ffmpeg.resolve_ffmpeg("SmartSaveVideo")
 
 
 def _list_formats() -> list[str]:

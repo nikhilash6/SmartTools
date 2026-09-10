@@ -128,6 +128,31 @@ Self-contained FFmpeg video encoder with the same manual-save workflow as **Smar
 
 ---
 
+### Smart Load Video
+
+**Display name:** Smart Load Video  
+**Category:** `slikvik`
+
+Self-contained FFmpeg video loader for files in ComfyUI’s **input** folder. It does **not** depend on VideoHelperSuite. Soft-modeled on VHS **Load Video FFmpeg (Upload)** for the core load widgets.
+
+| Input | Notes |
+|--------|--------|
+| `video` | Combo of videos in the input folder. Use **choose video to upload** (or drag-and-drop) to add a file. |
+| `force_rate` | `0` keeps the source fps. Otherwise frames are resampled to this rate. |
+| `custom_width` / `custom_height` | `0` keeps or derives that edge from the other. Both set crops to the new aspect, then scales. |
+| `multiple` | After the target size is chosen, both edges snap **up** to this multiple. Default `1` is a no-op. Example: `32` turns `1080` into `1088`. |
+| `frame_load_cap` | `0` loads all remaining frames from the effective start. |
+| `start_time` | Start offset in seconds (index `0`). |
+| `slice_index` | `0` starts at `start_time`. Each next index jumps forward by `frame_load_cap` frames (`start_time + slice_index * frame_load_cap / fps`). `slice_index > 0` requires `frame_load_cap > 0`. |
+
+The node shows a preview of the selected input file (`web/smart_load_video.js`). Restart ComfyUI after installing or updating this pack.
+
+**Outputs:** `IMAGE` (frame batch), `mask` (inverted alpha, or ones when there is no alpha), `audio` (Comfy `AUDIO` aligned to the loaded slice; silence if the file has no audio), `framerate` (loaded fps: `force_rate` when set, otherwise source fps).
+
+**ffmpeg:** Same resolve order as Smart Save Video (`SMART_SAVE_VIDEO_FFMPEG` / `VHS_FORCE_FFMPEG_PATH`, `imageio-ffmpeg`, system `PATH`, or a local `ffmpeg` / `ffmpeg.exe`).
+
+---
+
 ### Smart Lora
 
 **Display name:** Smart Lora  

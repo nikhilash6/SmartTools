@@ -137,23 +137,23 @@ class EncodeBehaviorTests(unittest.TestCase):
         self.images = torch.zeros(2, 8, 8, 3)
 
     def test_missing_ffmpeg_raises_clear_error(self):
-        previous = ssv._FFMPEG_PATH
+        previous = ssv.smart_ffmpeg._FFMPEG_PATH
         try:
-            ssv._FFMPEG_PATH = None
+            ssv.smart_ffmpeg._FFMPEG_PATH = None
             with self.assertRaisesRegex(RuntimeError, "ffmpeg is required"):
                 ssv._resolve_ffmpeg()
         finally:
-            ssv._FFMPEG_PATH = previous
+            ssv.smart_ffmpeg._FFMPEG_PATH = previous
 
     def test_ffmpeg_unset_sentinel_is_not_used_as_path(self):
-        previous = ssv._FFMPEG_PATH
+        previous = ssv.smart_ffmpeg._FFMPEG_PATH
         try:
-            ssv._FFMPEG_PATH = ssv._FFMPEG_UNSET
+            ssv.smart_ffmpeg._FFMPEG_PATH = ssv.smart_ffmpeg.FFMPEG_UNSET
             resolved = ssv._resolve_ffmpeg()
             self.assertTrue(os.path.isfile(resolved))
             self.assertNotIn("object object", resolved)
         finally:
-            ssv._FFMPEG_PATH = previous
+            ssv.smart_ffmpeg._FFMPEG_PATH = previous
 
     def test_silent_encode_keeps_single_file(self):
         def fake_process(args, video_format, video_metadata, file_path, env):
