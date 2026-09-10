@@ -12,13 +12,27 @@ const VIDEO_ACCEPT = [
 ].join(",");
 
 const IMAGE_PREVIEW_EXT = new Set(["gif", "webp", "avif"]);
+const DEFAULT_MAX_UPLOAD = 100 * 1024 * 1024;
+const PATH_HINT =
+    "This file is larger than ComfyUI's upload limit. Use Browse video path so FFmpeg can read it from disk.";
 
 function extensionOf(filename) {
     const i = String(filename || "").lastIndexOf(".");
     return i >= 0 ? filename.slice(i + 1).toLowerCase() : "";
 }
 
-function viewUrl(filename) {
+function maxUploadBytes() {
+    const flags = api.serverFeatureFlags || api.featureFlags || {};
+    const n = Number(flags.max_upload_size);
+    return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_UPLOAD;
+}
+
+function isTooLargeFailure(status, text) {
+    const body = String(text || "");
+    return status === 413 || /too large|request entity too large|413/i.test(body);
+}
+
+function inputViewUrl(filename) {
     const ext = extensionOf(filename);
     const kind = IMAGE_PREVIEW_EXT.has(ext) ? "image" : "video";
     const params = new URLSearchParams({
@@ -30,15 +44,30 @@ function viewUrl(filename) {
     return api.apiURL("/view?" + params);
 }
 
+function pathViewUrl(path) {
+    const params = new URLSearchParams({
+        path,
+        t: String(Date.now()),
+    });
+    return api.apiURL("/smart_tools/load_video/view?" + params);
+}
+
 async function uploadVideo(file) {
+    if (file.size > maxUploadBytes()) {
+        throw new Error(PATH_HINT);
+    }
     const body = new FormData();
     body.append("image", file);
     body.append("overwrite", "true");
     const resp = await api.fetchApi("/upload/image", { method: "POST", body });
+    const text = await resp.text();
     if (!resp.ok) {
-        throw new Error(`Upload failed (${resp.status}): ${await resp.text()}`);
+        if (isTooLargeFailure(resp.status, text)) {
+            throw new Error(PATH_HINT);
+        }
+        throw new Error(`Upload failed (${resp.status}): ${text}`);
     }
-    const data = await resp.json();
+    const data = JSON.parse(text);
     return data.name || file.name;
 }
 
@@ -53,7 +82,9 @@ app.registerExtension({
             onNodeCreated?.apply(this, arguments);
 
             const self = this;
-            const videoWidget = this.widgets?.find((w) => w.name === "video");
+            const getWidget = (name) => self.widgets?.find((w) => w.name === name);
+            const videoWidget = getWidget("video");
+            const pathWidget = getWidget("video_path");
 
             const fileInput = document.createElement("input");
             Object.assign(fileInput, {
@@ -71,11 +102,14 @@ app.registerExtension({
                     if (Array.isArray(values) && !values.includes(filename)) {
                         values.push(filename);
                     }
+                    if (pathWidget) {
+                        pathWidget.value = "";
+                    }
                     if (videoWidget) {
                         videoWidget.value = filename;
                         videoWidget.callback?.(filename);
                     }
-                    self.updatePreview?.(filename);
+                    self.updatePreview?.();
                 } catch (err) {
                     alert(err?.message || String(err));
                 }
@@ -92,6 +126,27 @@ app.registerExtension({
                 fileInput.click();
             });
             uploadWidget.options.serialize = false;
+
+            const browseWidget = this.addWidget("button", "browse video path", "image", async () => {
+                app.canvas.node_widget = null;
+                try {
+                    const resp = await api.fetchApi("/smart_tools/load_video/browse_file", {
+                        method: "POST",
+                    });
+                    if (resp.status === 204) return;
+                    if (!resp.ok) {
+                        throw new Error(`Browse failed (${resp.status}): ${await resp.text()}`);
+                    }
+                    const data = await resp.json();
+                    if (!data?.path || !pathWidget) return;
+                    pathWidget.value = data.path;
+                    pathWidget.callback?.(data.path);
+                    self.updatePreview?.();
+                } catch (err) {
+                    alert(err?.message || String(err));
+                }
+            });
+            browseWidget.options.serialize = false;
 
             const previewRoot = document.createElement("div");
             previewRoot.style.width = "100%";
@@ -153,8 +208,9 @@ app.registerExtension({
                 }
             });
 
-            this.updatePreview = function (filename) {
-                const name = filename || videoWidget?.value;
+            this.updatePreview = function () {
+                const diskPath = String(pathWidget?.value || "").trim();
+                const name = diskPath || videoWidget?.value;
                 if (!name) {
                     videoEl.removeAttribute("src");
                     imgEl.removeAttribute("src");
@@ -164,7 +220,7 @@ app.registerExtension({
                     fitHeight();
                     return;
                 }
-                const url = viewUrl(name);
+                const url = diskPath ? pathViewUrl(diskPath) : inputViewUrl(name);
                 const ext = extensionOf(name);
                 if (IMAGE_PREVIEW_EXT.has(ext)) {
                     videoEl.pause();
@@ -184,7 +240,15 @@ app.registerExtension({
                 const original = videoWidget.callback;
                 videoWidget.callback = function (value) {
                     const result = original?.call(this, value);
-                    self.updatePreview(value);
+                    self.updatePreview();
+                    return result;
+                };
+            }
+            if (pathWidget) {
+                const original = pathWidget.callback;
+                pathWidget.callback = function (value) {
+                    const result = original?.call(this, value);
+                    self.updatePreview();
                     return result;
                 };
             }
@@ -199,6 +263,9 @@ app.registerExtension({
                     if (Array.isArray(values) && !values.includes(filename)) {
                         values.push(filename);
                     }
+                    if (pathWidget) {
+                        pathWidget.value = "";
+                    }
                     if (videoWidget) {
                         videoWidget.value = filename;
                         videoWidget.callback?.(filename);
@@ -210,14 +277,13 @@ app.registerExtension({
                 }
             };
 
-            this.updatePreview(videoWidget?.value);
+            this.updatePreview();
         };
 
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             const result = onConfigure?.apply(this, arguments);
-            const videoWidget = this.widgets?.find((w) => w.name === "video");
-            this.updatePreview?.(videoWidget?.value);
+            this.updatePreview?.();
             return result;
         };
     },

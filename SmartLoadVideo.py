@@ -7,16 +7,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import ctypes
 import logging
 import math
 import os
 import re
 import subprocess
+import sys
 import time
 from typing import Any
 
 import numpy as np
 import torch
+from aiohttp import web
+from server import PromptServer
 
 import folder_paths
 from comfy.utils import ProgressBar
@@ -333,8 +338,124 @@ def _extract_audio(
     return {"waveform": audio.contiguous(), "sample_rate": sample_rate}
 
 
-def _video_path(video: str) -> str:
-    return folder_paths.get_annotated_filepath(str(video).strip())
+def resolve_source(video: str, video_path: str = "") -> str:
+    """Prefer an explicit disk path; otherwise resolve the input-folder combo."""
+    path_text = str(video_path or "").strip()
+    if path_text:
+        resolved = os.path.abspath(os.path.expanduser(path_text))
+        if not os.path.isfile(resolved):
+            raise FileNotFoundError(f"SmartLoadVideo: invalid video path: {video_path}")
+        return resolved
+
+    combo = str(video or "").strip()
+    if not combo:
+        raise FileNotFoundError(
+            "SmartLoadVideo: no video selected. Set video_path or choose a file."
+        )
+    path = folder_paths.get_annotated_filepath(combo)
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError(f"SmartLoadVideo: invalid video file: {video}")
+    return path
+
+
+def _video_extension(path: str) -> str:
+    name = os.path.basename(path)
+    return name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+
+def safe_view_path(raw: str) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        resolved = os.path.realpath(os.path.expanduser(text))
+    except OSError:
+        return None
+    if not os.path.isfile(resolved):
+        return None
+    if _video_extension(resolved) not in _VIDEO_EXTENSIONS:
+        return None
+    return resolved
+
+
+def _pick_video_file() -> str:
+    filter_spec = "Video files|*.mp4;*.webm;*.mkv;*.gif;*.mov;*.avi;*.webp|All files|*.*"
+    if sys.platform == "win32":
+        try:
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "$d = New-Object System.Windows.Forms.OpenFileDialog;"
+                f"$d.Filter='{filter_spec}';"
+                "$d.Title='Select video';"
+                "$form = New-Object System.Windows.Forms.Form;"
+                "$form.TopMost = $true;"
+                "$form.WindowState = 'Minimized';"
+                "$form.ShowInTaskbar = $false;"
+                "$form.Add_Shown({$form.Activate()});"
+                "if($d.ShowDialog($form) -eq 'OK'){ Write-Output $d.FileName };"
+                "$form.Dispose();"
+            )
+            flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                creationflags=flags,
+            )
+            out = proc.stdout.strip()
+            if out:
+                try:
+                    user32 = ctypes.windll.user32
+                    hwnd = user32.GetForegroundWindow()
+                    if hwnd:
+                        user32.SetForegroundWindow(hwnd)
+                        user32.BringWindowToTop(hwnd)
+                except Exception:
+                    pass
+            return out
+        except Exception:
+            return ""
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        path = filedialog.askopenfilename(
+            title="Select video",
+            filetypes=[
+                ("Video files", "*.mp4 *.webm *.mkv *.gif *.mov *.avi *.webp"),
+                ("All files", "*.*"),
+            ],
+        )
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        return str(path or "")
+    except Exception:
+        return ""
+
+
+@PromptServer.instance.routes.post("/smart_tools/load_video/browse_file")
+async def browse_file_handler(request):
+    path = await asyncio.get_event_loop().run_in_executor(None, _pick_video_file)
+    if not path:
+        return web.Response(status=204)
+    return web.json_response({"path": path})
+
+
+@PromptServer.instance.routes.get("/smart_tools/load_video/view")
+async def view_video_handler(request):
+    path = safe_view_path(request.rel_url.query.get("path", ""))
+    if not path:
+        return web.Response(status=404, text="Invalid video path")
+    return web.FileResponse(path)
 
 
 class SmartLoadVideo:
@@ -344,6 +465,18 @@ class SmartLoadVideo:
         return {
             "required": {
                 "video": (files or [""],),
+                "video_path": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "placeholder": r"D:\videos\clip.mp4",
+                        "tooltip": (
+                            "Absolute path (or ~) to a video on disk. "
+                            "When set, this is used instead of the input-folder combo. "
+                            "Use this for files larger than ComfyUI's upload limit."
+                        ),
+                    },
+                ),
                 "force_rate": (
                     "FLOAT",
                     {
@@ -421,13 +554,14 @@ class SmartLoadVideo:
     FUNCTION = "load_video"
     CATEGORY = "slikvik"
     DESCRIPTION = (
-        "Loads a video from the input folder with FFmpeg. "
+        "Loads a video from a disk path or the input folder with FFmpeg. "
         "slice_index selects contiguous frame_load_cap chunks from start_time."
     )
 
     def load_video(
         self,
         video: str,
+        video_path: str = "",
         force_rate: float = 0.0,
         custom_width: int = 0,
         custom_height: int = 0,
@@ -436,9 +570,7 @@ class SmartLoadVideo:
         start_time: float = 0.0,
         slice_index: int = 0,
     ):
-        path = _video_path(video)
-        if not path or not os.path.isfile(path):
-            raise FileNotFoundError(f"SmartLoadVideo: invalid video file: {video}")
+        path = resolve_source(video, video_path)
 
         ffmpeg_path = _resolve_ffmpeg()
         probe = _probe_video(ffmpeg_path, path)
@@ -499,6 +631,7 @@ class SmartLoadVideo:
     def IS_CHANGED(
         cls,
         video,
+        video_path="",
         force_rate=0.0,
         custom_width=0,
         custom_height=0,
@@ -508,11 +641,11 @@ class SmartLoadVideo:
         slice_index=0,
     ):
         try:
-            path = _video_path(video)
+            path = resolve_source(video, video_path)
             stat = os.stat(path)
             file_key = (stat.st_mtime_ns, stat.st_size)
         except OSError:
-            file_key = str(video)
+            file_key = (str(video), str(video_path))
         return (
             file_key,
             float(force_rate),
@@ -525,11 +658,11 @@ class SmartLoadVideo:
         )
 
     @classmethod
-    def VALIDATE_INPUTS(cls, video, **kwargs):
-        if not video:
-            return "Invalid video file: (empty)"
-        if not folder_paths.exists_annotated_filepath(video):
-            return f"Invalid video file: {video}"
+    def VALIDATE_INPUTS(cls, video, video_path="", **kwargs):
+        try:
+            resolve_source(video, video_path)
+        except FileNotFoundError as exc:
+            return str(exc)
         return True
 
 

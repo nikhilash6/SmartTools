@@ -32,6 +32,31 @@ def _ensure_comfy_stubs():
         )
         sys.modules["folder_paths"] = folder_paths
 
+    if "server" not in sys.modules:
+        server = types.ModuleType("server")
+
+        class _Routes:
+            def post(self, _path):
+                return lambda fn: fn
+
+            def get(self, _path):
+                return lambda fn: fn
+
+        class _PromptServer:
+            instance = types.SimpleNamespace(routes=_Routes())
+
+        server.PromptServer = _PromptServer
+        sys.modules["server"] = server
+
+    if "aiohttp" not in sys.modules:
+        aiohttp = types.ModuleType("aiohttp")
+        aiohttp.web = types.SimpleNamespace(
+            Response=lambda **kwargs: kwargs,
+            json_response=lambda data: data,
+            FileResponse=lambda path: {"file": path},
+        )
+        sys.modules["aiohttp"] = aiohttp
+
     if "comfy.utils" not in sys.modules:
         comfy = sys.modules.get("comfy") or types.ModuleType("comfy")
         utils = types.ModuleType("comfy.utils")
@@ -107,6 +132,7 @@ class NodeContractTests(unittest.TestCase):
         required = slv.SmartLoadVideo.INPUT_TYPES()["required"]
         for name in (
             "video",
+            "video_path",
             "force_rate",
             "custom_width",
             "custom_height",
@@ -116,6 +142,7 @@ class NodeContractTests(unittest.TestCase):
             "slice_index",
         ):
             self.assertIn(name, required)
+        self.assertEqual(required["video_path"][1]["default"], "")
         self.assertEqual(required["multiple"][1]["default"], 1)
         self.assertEqual(required["slice_index"][1]["default"], 0)
         self.assertNotIn("format", required)
@@ -161,7 +188,7 @@ class DecodeTests(unittest.TestCase):
                 self.skipTest(f"could not generate test clip: {exc}")
 
             node = slv.SmartLoadVideo()
-            with mock.patch.object(slv, "_video_path", return_value=path):
+            with mock.patch.object(slv, "resolve_source", return_value=path):
                 images, mask, audio, fps = node.load_video(
                     video="clip.mp4",
                     force_rate=10,
@@ -181,7 +208,7 @@ class DecodeTests(unittest.TestCase):
             self.assertIn("waveform", audio)
             self.assertIn("sample_rate", audio)
 
-            with mock.patch.object(slv, "_video_path", return_value=path):
+            with mock.patch.object(slv, "resolve_source", return_value=path):
                 images0, _, _, _ = node.load_video(
                     video="clip.mp4",
                     frame_load_cap=4,
@@ -190,6 +217,82 @@ class DecodeTests(unittest.TestCase):
                 )
             self.assertEqual(images0.shape[0], 4)
             self.assertEqual(tuple(images0.shape[1:3]), (48, 64))
+
+
+class PathResolveTests(unittest.TestCase):
+    def test_path_wins_over_combo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real.mp4"
+            combo = Path(tmp) / "combo.mp4"
+            real.write_bytes(b"x")
+            combo.write_bytes(b"y")
+            with mock.patch.object(
+                slv.folder_paths, "get_annotated_filepath", return_value=str(combo)
+            ):
+                self.assertEqual(
+                    slv.resolve_source("combo.mp4", str(real)),
+                    os.path.abspath(str(real)),
+                )
+
+    def test_tilde_expansion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "home_clip.mp4"
+            clip.write_bytes(b"x")
+            with mock.patch.object(slv.os.path, "expanduser", return_value=str(clip)):
+                self.assertEqual(
+                    slv.resolve_source("", "~/home_clip.mp4"),
+                    os.path.abspath(str(clip)),
+                )
+
+    def test_empty_combo_with_path_validates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "ok.mp4"
+            clip.write_bytes(b"x")
+            self.assertTrue(
+                slv.SmartLoadVideo.VALIDATE_INPUTS("", video_path=str(clip))
+            )
+
+    def test_missing_path_errors(self):
+        with self.assertRaisesRegex(FileNotFoundError, "invalid video path"):
+            slv.resolve_source("", r"D:\missing_smart_load_video.mp4")
+        message = slv.SmartLoadVideo.VALIDATE_INPUTS(
+            "", video_path=r"D:\missing_smart_load_video.mp4"
+        )
+        self.assertIsInstance(message, str)
+        self.assertIn("invalid video path", message)
+
+    def test_empty_combo_and_path_errors(self):
+        with self.assertRaisesRegex(FileNotFoundError, "no video selected"):
+            slv.resolve_source("", "")
+
+
+class BrowseViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_browse_cancel_returns_204(self):
+        with mock.patch.object(slv, "_pick_video_file", return_value=""):
+            resp = await slv.browse_file_handler(None)
+        self.assertEqual(resp["status"], 204)
+
+    async def test_browse_returns_path(self):
+        with mock.patch.object(slv, "_pick_video_file", return_value=r"D:\clip.mp4"):
+            resp = await slv.browse_file_handler(None)
+        self.assertEqual(resp, {"path": r"D:\clip.mp4"})
+
+    async def test_view_rejects_bad_path(self):
+        request = types.SimpleNamespace(
+            rel_url=types.SimpleNamespace(query={"path": r"D:\nope.txt"})
+        )
+        resp = await slv.view_video_handler(request)
+        self.assertEqual(resp["status"], 404)
+
+    async def test_view_serves_video_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "preview.mp4"
+            clip.write_bytes(b"mp4")
+            request = types.SimpleNamespace(
+                rel_url=types.SimpleNamespace(query={"path": str(clip)})
+            )
+            resp = await slv.view_video_handler(request)
+        self.assertEqual(resp["file"], os.path.realpath(str(clip)))
 
 
 if __name__ == "__main__":

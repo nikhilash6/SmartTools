@@ -133,19 +133,22 @@ Self-contained FFmpeg video encoder with the same manual-save workflow as **Smar
 **Display name:** Smart Load Video  
 **Category:** `slikvik`
 
-Self-contained FFmpeg video loader for files in ComfyUI’s **input** folder. It does **not** depend on VideoHelperSuite. Soft-modeled on VHS **Load Video FFmpeg (Upload)** for the core load widgets.
+Self-contained FFmpeg video loader. It does **not** depend on VideoHelperSuite. Soft-modeled on VHS **Load Video FFmpeg (Upload)** for the core load widgets.
 
 | Input | Notes |
 |--------|--------|
-| `video` | Combo of videos in the input folder. Use **choose video to upload** (or drag-and-drop) to add a file. |
+| `video` | Combo of videos in the input folder. Use **choose video to upload** (or drag-and-drop) for **small** files only. ComfyUI rejects uploads larger than `--max-upload-size` (default 100 MB). |
+| `video_path` | Absolute path (or `~`) to a video on disk. When set, this is used instead of the combo — FFmpeg reads the file in place, so size does not matter. Use **browse video path**. |
 | `force_rate` | `0` keeps the source fps. Otherwise frames are resampled to this rate. |
 | `custom_width` / `custom_height` | `0` keeps or derives that edge from the other. Both set crops to the new aspect, then scales. |
 | `multiple` | After the target size is chosen, both edges snap **up** to this multiple. Default `1` is a no-op. Example: `32` turns `1080` into `1088`. |
-| `frame_load_cap` | `0` loads all remaining frames from the effective start. |
+| `frame_load_cap` | `0` loads all remaining frames from the effective start. For N-second slices: `frame_load_cap = N * fps` (e.g. 300 frames at 30 fps ≈ 10 seconds). |
 | `start_time` | Start offset in seconds (index `0`). |
 | `slice_index` | `0` starts at `start_time`. Each next index jumps forward by `frame_load_cap` frames (`start_time + slice_index * frame_load_cap / fps`). `slice_index > 0` requires `frame_load_cap > 0`. |
 
-The node shows a preview of the selected input file (`web/smart_load_video.js`). Restart ComfyUI after installing or updating this pack.
+**Large clips:** do not upload them. Set `video_path` (browse or paste), leave `start_time` at `0`, set `frame_load_cap` to `seconds * fps`, and increment `slice_index` each run (a 2-minute clip in 10-second chunks is indices `0`–`11` at 30 fps with cap `300`).
+
+The node shows a preview of the selected combo file or disk path (`web/smart_load_video.js`). Restart ComfyUI after installing or updating this pack so the browse/view routes register.
 
 **Outputs:** `IMAGE` (frame batch), `mask` (inverted alpha, or ones when there is no alpha), `audio` (Comfy `AUDIO` aligned to the loaded slice; silence if the file has no audio), `framerate` (loaded fps: `force_rate` when set, otherwise source fps).
 
