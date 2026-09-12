@@ -34,6 +34,16 @@ _ENCODE_ARGS = smart_ffmpeg.ENCODE_ARGS
 _VIDEO_EXTENSIONS = ("webm", "mp4", "mkv", "gif", "mov", "avi", "webp")
 _DIM_MAX = 16384
 _TIME_MAX = 1_000_000.0
+LOAD_FORMATS: dict[str, dict[str, Any]] = {
+    "None": {},
+    "AnimateDiff": {"target_rate": 8, "dim": [8, 0, 512, 512]},
+    "Mochi": {"target_rate": 24, "dim": [16, 0, 848, 480], "frames": [6, 1]},
+    "LTXV": {"target_rate": 24, "dim": [32, 0, 768, 512], "frames": [8, 1]},
+    "Hunyuan": {"target_rate": 24, "dim": [16, 0, 848, 480], "frames": [4, 1]},
+    "Cosmos": {"target_rate": 24, "dim": [8, 0, 1280, 704], "frames": [8, 1]},
+    "Wan": {"target_rate": 16, "dim": [8, 0, 832, 480], "frames": [4, 1]},
+    "H3": {"target_rate": 24, "dim": [32, 0, 1344, 768], "frames": [17, 5]},
+}
 _STREAM_SIZE_RE = re.compile(r"^ *Stream .* Video.*, ([1-9]|\d{2,})x(\d+)")
 _FPS_RE = re.compile(r", ([\d.]+) fps")
 _DURATION_RE = re.compile(r"Duration: (\d+:\d+:\d+\.\d+),")
@@ -57,6 +67,22 @@ def _list_input_videos() -> list[str]:
         if ext in _VIDEO_EXTENSIONS:
             files.append(name)
     return sorted(files)
+
+
+def get_load_format(name: str) -> dict[str, Any]:
+    return dict(LOAD_FORMATS.get(str(name or "None"), {}))
+
+
+def snap_frame_count(count: int, div: int, mod: int) -> int:
+    n = int(count)
+    step = int(div)
+    remainder = int(mod)
+    if n <= 0 or step <= 0:
+        return max(0, n)
+    k = n - ((n - remainder) % step)
+    if k > n:
+        k -= step
+    return max(0, k)
 
 
 def snap_up(dim: int, multiple: int) -> int:
@@ -458,6 +484,64 @@ async def view_video_handler(request):
     return web.FileResponse(path)
 
 
+def source_info_from_probe(probe: dict[str, Any]) -> dict[str, Any]:
+    fps = float(probe.get("fps") or 0)
+    duration = float(probe.get("duration") or 0)
+    frames = int(round(duration * fps)) if fps > 0 and duration > 0 else 0
+    return {
+        "fps": fps,
+        "frames": frames,
+        "duration": duration,
+        "width": int(probe.get("width") or 0),
+        "height": int(probe.get("height") or 0),
+    }
+
+
+_query_cache: dict[str, tuple[int, dict[str, Any]]] = {}
+
+
+def query_video_source(path: str) -> dict[str, Any]:
+    real = os.path.realpath(path)
+    mtime_ns = os.stat(real).st_mtime_ns
+    cached = _query_cache.get(real)
+    if cached and cached[0] == mtime_ns:
+        return cached[1]
+    source = source_info_from_probe(_probe_video(_resolve_ffmpeg(), real))
+    _query_cache[real] = (mtime_ns, source)
+    return source
+
+
+def resolve_query_path(query: Any) -> str | None:
+    path = safe_view_path(query.get("path", ""))
+    if path:
+        return path
+    filename = str(query.get("filename") or "").strip()
+    if not filename:
+        return None
+    try:
+        resolved = folder_paths.get_annotated_filepath(filename)
+    except Exception:
+        return None
+    if not resolved or not os.path.isfile(resolved):
+        return None
+    if _video_extension(resolved) not in _VIDEO_EXTENSIONS:
+        return None
+    return os.path.realpath(resolved)
+
+
+@PromptServer.instance.routes.get("/smart_tools/load_video/query")
+async def query_video_handler(request):
+    path = resolve_query_path(request.rel_url.query)
+    if not path:
+        return web.Response(status=404, text="Invalid video path")
+    try:
+        source = query_video_source(path)
+    except Exception as exc:
+        logger.warning("SmartLoadVideo: query failed for %s: %s", path, exc)
+        return web.json_response({})
+    return web.json_response({"source": source})
+
+
 class SmartLoadVideo:
     @classmethod
     def INPUT_TYPES(cls):
@@ -482,8 +566,10 @@ class SmartLoadVideo:
                     {
                         "default": 0.0,
                         "min": 0.0,
-                        "max": 60.0,
+                        "max": 240.0,
                         "step": 1.0,
+                        "disable": 0,
+                        "widgetType": "SLVFLOAT",
                         "tooltip": "0 uses the source framerate.",
                     },
                 ),
@@ -494,6 +580,8 @@ class SmartLoadVideo:
                         "min": 0,
                         "max": _DIM_MAX,
                         "step": 1,
+                        "disable": 0,
+                        "widgetType": "SLVINT",
                         "tooltip": "0 keeps or derives width from the other setting.",
                     },
                 ),
@@ -504,6 +592,8 @@ class SmartLoadVideo:
                         "min": 0,
                         "max": _DIM_MAX,
                         "step": 1,
+                        "disable": 0,
+                        "widgetType": "SLVINT",
                         "tooltip": "0 keeps or derives height from the other setting.",
                     },
                 ),
@@ -514,7 +604,19 @@ class SmartLoadVideo:
                         "min": 1,
                         "max": _DIM_MAX,
                         "step": 1,
-                        "tooltip": "Snap width and height up to this multiple. 1 leaves pixels unchanged.",
+                        "tooltip": "Snap width and height up to this multiple. 1 leaves pixels unchanged. Format presets set this to the model grid (8/16/32).",
+                    },
+                ),
+                "format": (
+                    list(LOAD_FORMATS.keys()),
+                    {
+                        "default": "None",
+                        "formats": LOAD_FORMATS,
+                        "tooltip": (
+                            "Model preset. Sets reset targets and snap rules; "
+                            "does not change values until you click reset. "
+                            "H3: 24 fps reset, 1344×768 reset, multiple 32, frames 5+17n."
+                        ),
                     },
                 ),
                 "frame_load_cap": (
@@ -524,6 +626,8 @@ class SmartLoadVideo:
                         "min": 0,
                         "max": 1_000_000,
                         "step": 1,
+                        "disable": 0,
+                        "widgetType": "SLVINT",
                         "tooltip": "0 loads all remaining frames from the effective start.",
                     },
                 ),
@@ -555,7 +659,8 @@ class SmartLoadVideo:
     CATEGORY = "slikvik"
     DESCRIPTION = (
         "Loads a video from a disk path or the input folder with FFmpeg. "
-        "slice_index selects contiguous frame_load_cap chunks from start_time."
+        "slice_index selects contiguous frame_load_cap chunks from start_time. "
+        "format presets set reset/snap rules (VHS-style)."
     )
 
     def load_video(
@@ -566,6 +671,7 @@ class SmartLoadVideo:
         custom_width: int = 0,
         custom_height: int = 0,
         multiple: int = 1,
+        format: str = "None",
         frame_load_cap: int = 0,
         start_time: float = 0.0,
         slice_index: int = 0,
@@ -623,6 +729,19 @@ class SmartLoadVideo:
                 device=images.device,
             )
 
+        spec = get_load_format(format)
+        frames_rule = spec.get("frames")
+        if frames_rule and len(frames_rule) >= 2:
+            keep = snap_frame_count(int(images.shape[0]), frames_rule[0], frames_rule[1])
+            if keep <= 0:
+                raise RuntimeError(
+                    f"SmartLoadVideo: {images.shape[0]} frames is incompatible with "
+                    f"format {format!r} (need n %{frames_rule[0]} == {frames_rule[1]})."
+                )
+            if keep < int(images.shape[0]):
+                images = images[:keep]
+                mask = mask[:keep]
+
         duration_s = images.shape[0] / fps
         audio = _extract_audio(ffmpeg_path, path, seek, duration_s)
         return (images, mask, audio, float(fps))
@@ -636,6 +755,7 @@ class SmartLoadVideo:
         custom_width=0,
         custom_height=0,
         multiple=1,
+        format="None",
         frame_load_cap=0,
         start_time=0.0,
         slice_index=0,
@@ -652,6 +772,7 @@ class SmartLoadVideo:
             int(custom_width),
             int(custom_height),
             int(multiple),
+            str(format),
             int(frame_load_cap),
             float(start_time),
             int(slice_index),

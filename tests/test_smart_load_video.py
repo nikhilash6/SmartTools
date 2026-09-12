@@ -124,6 +124,19 @@ class HelperTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "framerate"):
             slv.loaded_framerate(0, 0)
 
+    def test_snap_frame_count_h3(self):
+        self.assertEqual(slv.snap_frame_count(302, 17, 5), 294)
+        self.assertEqual(slv.snap_frame_count(5, 17, 5), 5)
+        self.assertEqual(slv.snap_frame_count(22, 17, 5), 22)
+        self.assertEqual(slv.snap_frame_count(4, 17, 5), 0)
+
+    def test_h3_format_spec(self):
+        spec = slv.get_load_format("H3")
+        self.assertEqual(spec["target_rate"], 24)
+        self.assertEqual(spec["dim"], [32, 0, 1344, 768])
+        self.assertEqual(spec["frames"], [17, 5])
+        self.assertEqual(slv.get_load_format("None"), {})
+
 
 class NodeContractTests(unittest.TestCase):
     def test_registration_and_widgets(self):
@@ -137,6 +150,7 @@ class NodeContractTests(unittest.TestCase):
             "custom_width",
             "custom_height",
             "multiple",
+            "format",
             "frame_load_cap",
             "start_time",
             "slice_index",
@@ -144,8 +158,16 @@ class NodeContractTests(unittest.TestCase):
             self.assertIn(name, required)
         self.assertEqual(required["video_path"][1]["default"], "")
         self.assertEqual(required["multiple"][1]["default"], 1)
+        self.assertEqual(required["format"][1]["default"], "None")
+        self.assertIn("H3", required["format"][0])
+        self.assertEqual(required["format"][1]["formats"]["H3"]["frames"], [17, 5])
+        self.assertEqual(required["force_rate"][1]["max"], 240.0)
+        self.assertEqual(required["force_rate"][1]["disable"], 0)
+        self.assertEqual(required["force_rate"][1]["widgetType"], "SLVFLOAT")
+        self.assertEqual(required["custom_width"][1]["widgetType"], "SLVINT")
+        self.assertEqual(required["frame_load_cap"][1]["disable"], 0)
+        self.assertEqual(required["frame_load_cap"][1]["widgetType"], "SLVINT")
         self.assertEqual(required["slice_index"][1]["default"], 0)
-        self.assertNotIn("format", required)
         self.assertNotIn("meta_batch", required)
         self.assertEqual(slv.SmartLoadVideo.RETURN_TYPES, ("IMAGE", "MASK", "AUDIO", "FLOAT"))
         self.assertEqual(slv.SmartLoadVideo.RETURN_NAMES, ("IMAGE", "mask", "audio", "framerate"))
@@ -293,6 +315,69 @@ class BrowseViewTests(unittest.IsolatedAsyncioTestCase):
             )
             resp = await slv.view_video_handler(request)
         self.assertEqual(resp["file"], os.path.realpath(str(clip)))
+
+
+class QueryTests(unittest.TestCase):
+    def test_source_info_from_probe(self):
+        info = slv.source_info_from_probe(
+            {"fps": 29.97, "duration": 10.0, "width": 1920, "height": 1080}
+        )
+        self.assertEqual(info["fps"], 29.97)
+        self.assertEqual(info["frames"], round(10.0 * 29.97))
+        self.assertEqual(info["width"], 1920)
+        self.assertEqual(info["height"], 1080)
+
+    def test_source_info_zero_duration(self):
+        info = slv.source_info_from_probe({"fps": 24.0, "duration": 0, "width": 8, "height": 8})
+        self.assertEqual(info["frames"], 0)
+
+
+class QueryRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_query_rejects_bad_path(self):
+        request = types.SimpleNamespace(
+            rel_url=types.SimpleNamespace(query={"path": r"D:\nope.txt"})
+        )
+        resp = await slv.query_video_handler(request)
+        self.assertEqual(resp["status"], 404)
+
+    async def test_query_generated_clip(self):
+        try:
+            ffmpeg = slv._resolve_ffmpeg()
+        except RuntimeError:
+            self.skipTest("ffmpeg is not available")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "query.mp4")
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=64x48:d=1",
+                "-r",
+                "10",
+                "-frames:v",
+                "10",
+                "-pix_fmt",
+                "yuv420p",
+                path,
+            ]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                self.skipTest(f"could not generate test clip: {exc}")
+
+            request = types.SimpleNamespace(
+                rel_url=types.SimpleNamespace(query={"path": path})
+            )
+            resp = await slv.query_video_handler(request)
+
+        self.assertIn("source", resp)
+        self.assertGreater(resp["source"]["fps"], 0)
+        self.assertGreaterEqual(resp["source"]["frames"], 1)
+        self.assertEqual(resp["source"]["width"], 64)
+        self.assertEqual(resp["source"]["height"], 48)
 
 
 if __name__ == "__main__":
