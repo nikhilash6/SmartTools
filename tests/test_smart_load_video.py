@@ -194,8 +194,8 @@ class NodeContractTests(unittest.TestCase):
         self.assertEqual(required["frame_load_cap"][1]["widgetType"], "SLVINT")
         self.assertEqual(required["slice_index"][1]["default"], 0)
         self.assertNotIn("meta_batch", required)
-        self.assertEqual(slv.SmartLoadVideo.RETURN_TYPES, ("IMAGE", "MASK", "AUDIO", "FLOAT"))
-        self.assertEqual(slv.SmartLoadVideo.RETURN_NAMES, ("IMAGE", "mask", "audio", "framerate"))
+        self.assertEqual(slv.SmartLoadVideo.RETURN_TYPES, ("IMAGE", "MASK", "AUDIO", "FLOAT", "INT"))
+        self.assertEqual(slv.SmartLoadVideo.RETURN_NAMES, ("IMAGE", "mask", "audio", "framerate", "total_frames"))
         self.assertNotIn("video_info", slv.SmartLoadVideo.RETURN_NAMES)
         self.assertIn("SmartLoadVideo", (ROOT / "__init__.py").read_text(encoding="utf-8"))
 
@@ -236,7 +236,7 @@ class DecodeTests(unittest.TestCase):
 
             node = slv.SmartLoadVideo()
             with mock.patch.object(slv, "resolve_source", return_value=path):
-                images, mask, audio, fps = node.load_video(
+                images, mask, audio, fps, total_frames = node.load_video(
                     video="clip.mp4",
                     force_rate=10,
                     custom_width=0,
@@ -249,6 +249,7 @@ class DecodeTests(unittest.TestCase):
 
             self.assertEqual(tuple(images.shape[1:]), (64, 64, 3))
             self.assertEqual(images.shape[0], 4)
+            self.assertEqual(total_frames, 4)
             self.assertEqual(tuple(mask.shape), (4, 64, 64))
             self.assertTrue(torch.all(mask == 1))
             self.assertAlmostEqual(float(fps), 10.0)
@@ -256,7 +257,7 @@ class DecodeTests(unittest.TestCase):
             self.assertIn("sample_rate", audio)
 
             with mock.patch.object(slv, "resolve_source", return_value=path):
-                images0, _, _, _ = node.load_video(
+                images0, _, _, _, _ = node.load_video(
                     video="clip.mp4",
                     frame_load_cap=4,
                     slice_index=0,

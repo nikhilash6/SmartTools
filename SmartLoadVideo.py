@@ -704,8 +704,8 @@ class SmartLoadVideo:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "AUDIO", "FLOAT")
-    RETURN_NAMES = ("IMAGE", "mask", "audio", "framerate")
+    RETURN_TYPES = ("IMAGE", "MASK", "AUDIO", "FLOAT", "INT")
+    RETURN_NAMES = ("IMAGE", "mask", "audio", "framerate", "total_frames")
     FUNCTION = "load_video"
     CATEGORY = "slikvik"
     DESCRIPTION = (
@@ -799,7 +799,7 @@ class SmartLoadVideo:
 
         duration_s = images.shape[0] / fps
         audio = _extract_audio(ffmpeg_path, path, seek, duration_s)
-        return (images, mask, audio, float(fps))
+        return (images, mask, audio, float(fps), int(images.shape[0]))
 
     @classmethod
     def IS_CHANGED(
