@@ -1,16 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-const VIDEO_ACCEPT = [
-    "video/webm",
-    "video/mp4",
-    "video/x-matroska",
-    "video/quicktime",
-    "video/x-msvideo",
-    "image/gif",
-    "image/webp",
-].join(",");
-
 const IMAGE_PREVIEW_EXT = new Set(["gif", "webp", "avif"]);
 const DEFAULT_MAX_UPLOAD = 100 * 1024 * 1024;
 const PATH_HINT =
@@ -259,6 +249,21 @@ function legalFrameCount(n, frames) {
     return Math.max(0, k);
 }
 
+function legalFrameCountUp(n, frames) {
+    if (!(n > 0) || !frames) return Math.max(0, n);
+    const div = Number(frames[0]) || 1;
+    const mod = Number(frames[1]) || 0;
+    if (div <= 0) return n;
+    n = Math.max(Math.round(Number(n)), mod);
+    return n + (((mod - (n % div)) % div) + div) % div;
+}
+
+function framesFromCapSeconds(seconds, fps, frames) {
+    if (!(seconds > 0) || !(fps > 0)) return 0;
+    const raw = Math.round(Number(fps) * Number(seconds));
+    return frames ? legalFrameCountUp(raw, frames) : raw;
+}
+
 function makeAnnotated(widget, { integer = false } = {}) {
     if (!widget) return;
     widget.options = widget.options || {};
@@ -418,6 +423,7 @@ app.registerExtension({
             const heightWidget = replaceNumberWidget(this, getWidget("custom_height"), true);
             const multipleWidget = getWidget("multiple");
             const formatWidget = getWidget("format");
+            const capSecondsWidget = getWidget("cap_seconds");
             const capWidget = replaceNumberWidget(this, getWidget("frame_load_cap"), true);
             const formatMap =
                 nodeData?.input?.required?.format?.[1]?.formats || {};
@@ -429,6 +435,49 @@ app.registerExtension({
 
             function currentFormat() {
                 return formatMap[formatWidget?.value] || {};
+            }
+
+            function loadedFps() {
+                const force = Number(rateWidget?.value);
+                if (force > 0) return force;
+                return Number(self.video_query?.source?.fps) || 0;
+            }
+
+            function snapCapWidget() {
+                if (!capWidget) return;
+                const seconds = Number(capSecondsWidget?.value);
+                if (seconds > 0) {
+                    applyCapFromSeconds();
+                    return;
+                }
+                const current = Number(capWidget.value);
+                if (!(current > 0)) return;
+                const next = legalFrameCountUp(current, currentFormat().frames);
+                if (Number(capWidget.value) === next) return;
+                capWidget.value = next;
+            }
+
+            function applyCapFromSeconds() {
+                if (!capWidget) return;
+                const seconds = Number(capSecondsWidget?.value);
+                const fps = loadedFps();
+                if (!(seconds > 0) || !(fps > 0)) return;
+                const next = framesFromCapSeconds(seconds, fps, currentFormat().frames);
+                if (Number(capWidget.value) === next) return;
+                capWidget.value = next;
+            }
+            this.applyCapFromSeconds = applyCapFromSeconds;
+            this.snapCapWidget = snapCapWidget;
+
+            function watchCapInput(widget) {
+                if (!widget) return;
+                const original = widget.callback;
+                widget.callback = function (value) {
+                    const result = original?.apply(this, arguments);
+                    applyCapFromSeconds();
+                    app.graph?.setDirtyCanvas?.(true, true);
+                    return result;
+                };
             }
 
             function applyFormat() {
@@ -487,16 +536,13 @@ app.registerExtension({
                         setWidgetReset(capWidget, undefined);
                     }
                 }
+                snapCapWidget();
                 app.graph?.setDirtyCanvas?.(true, true);
             }
 
             if (rateWidget) {
                 rateWidget.annotation = function (value) {
                     if (value != 0) return;
-                    const reset = widgetReset(this);
-                    if (reset != null && reset != 0) {
-                        return roundToPrecision(reset, 2) + SOURCE_ARROW;
-                    }
                     const fps = self.video_query?.source?.fps;
                     if (fps != null) return roundToPrecision(fps, 2) + SOURCE_ARROW;
                 };
@@ -526,47 +572,6 @@ app.registerExtension({
                     return legal + SOURCE_ARROW;
                 };
             }
-
-            const fileInput = document.createElement("input");
-            Object.assign(fileInput, {
-                type: "file",
-                accept: VIDEO_ACCEPT,
-                style: "display: none",
-            });
-            fileInput.addEventListener("change", async () => {
-                const file = fileInput.files?.[0];
-                fileInput.value = "";
-                if (!file) return;
-                try {
-                    const filename = await uploadVideo(file);
-                    const values = videoWidget?.options?.values;
-                    if (Array.isArray(values) && !values.includes(filename)) {
-                        values.push(filename);
-                    }
-                    if (pathWidget) {
-                        pathWidget.value = "";
-                    }
-                    if (videoWidget) {
-                        videoWidget.value = filename;
-                        videoWidget.callback?.(filename);
-                    }
-                    self.updatePreview?.();
-                } catch (err) {
-                    alert(err?.message || String(err));
-                }
-            });
-            document.body.append(fileInput);
-            const prevOnRemoved = this.onRemoved;
-            this.onRemoved = function () {
-                fileInput.remove();
-                return prevOnRemoved?.apply(this, arguments);
-            };
-
-            const uploadWidget = this.addWidget("button", "choose video to upload", "image", () => {
-                app.canvas.node_widget = null;
-                fileInput.click();
-            });
-            uploadWidget.options.serialize = false;
 
             const browseWidget = this.addWidget("button", "browse video path", "image", async () => {
                 app.canvas.node_widget = null;
@@ -726,6 +731,31 @@ app.registerExtension({
                     return result;
                 };
             }
+            watchCapInput(rateWidget);
+            watchCapInput(capSecondsWidget);
+            if (capWidget) {
+                const original = capWidget.callback;
+                capWidget.callback = function (value) {
+                    const result = original?.apply(this, arguments);
+                    snapCapWidget();
+                    app.graph?.setDirtyCanvas?.(true, true);
+                    return result;
+                };
+            }
+
+            const prevWidgetChanged = this.onWidgetChanged;
+            this.onWidgetChanged = function (name, value, oldValue, widget) {
+                const result = prevWidgetChanged?.apply(this, arguments);
+                if (name === "format") applyFormat();
+                else if (name === "force_rate" || name === "cap_seconds") {
+                    applyCapFromSeconds();
+                    app.graph?.setDirtyCanvas?.(true, true);
+                } else if (name === "frame_load_cap") {
+                    snapCapWidget();
+                    app.graph?.setDirtyCanvas?.(true, true);
+                }
+                return result;
+            };
 
             this.onDragOver = (e) => !!e?.dataTransfer?.types?.includes?.("Files");
             this.onDragDrop = async function (e) {
@@ -759,6 +789,7 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             const result = onConfigure?.apply(this, arguments);
             this.updatePreview?.();
+            this.applyCapFromSeconds?.();
             return result;
         };
     },

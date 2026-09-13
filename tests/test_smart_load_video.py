@@ -130,6 +130,29 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(slv.snap_frame_count(22, 17, 5), 22)
         self.assertEqual(slv.snap_frame_count(4, 17, 5), 0)
 
+    def test_snap_frame_count_up_h3(self):
+        self.assertEqual(slv.snap_frame_count_up(48, 17, 5), 56)
+        self.assertEqual(slv.snap_frame_count_up(5, 17, 5), 5)
+        self.assertEqual(slv.snap_frame_count_up(22, 17, 5), 22)
+        self.assertEqual(slv.snap_frame_count_up(4, 17, 5), 5)
+        self.assertEqual(slv.snap_frame_count_up(0, 17, 5), 0)
+        self.assertEqual(slv.snap_frame_count_up(39, 17, 5), 39)
+        self.assertEqual(slv.snap_frame_count_up(40, 17, 5), 56)
+
+    def test_frames_from_cap_seconds(self):
+        self.assertEqual(slv.frames_from_cap_seconds(10, 30), 300)
+        self.assertEqual(slv.frames_from_cap_seconds(2, 24, [17, 5]), 56)
+        self.assertEqual(slv.frames_from_cap_seconds(10, 24, [17, 5]), 243)
+        self.assertEqual(slv.frames_from_cap_seconds(0, 24, [17, 5]), 0)
+        self.assertEqual(slv.frames_from_cap_seconds(10, 0), 0)
+        self.assertEqual(
+            slv.frames_from_cap_seconds(10, 59.93, [17, 5]),
+            slv.snap_frame_count_up(599, 17, 5),
+        )
+        self.assertEqual(slv.resolve_frame_load_cap(48, 0, 24, [17, 5]), 56)
+        self.assertEqual(slv.resolve_frame_load_cap(12, 0, 24), 12)
+        self.assertEqual(slv.resolve_frame_load_cap(12, 2, 24, [17, 5]), 56)
+
     def test_h3_format_spec(self):
         spec = slv.get_load_format("H3")
         self.assertEqual(spec["target_rate"], 24)
@@ -151,6 +174,7 @@ class NodeContractTests(unittest.TestCase):
             "custom_height",
             "multiple",
             "format",
+            "cap_seconds",
             "frame_load_cap",
             "start_time",
             "slice_index",
@@ -165,6 +189,7 @@ class NodeContractTests(unittest.TestCase):
         self.assertEqual(required["force_rate"][1]["disable"], 0)
         self.assertEqual(required["force_rate"][1]["widgetType"], "SLVFLOAT")
         self.assertEqual(required["custom_width"][1]["widgetType"], "SLVINT")
+        self.assertEqual(required["cap_seconds"][1]["default"], 0.0)
         self.assertEqual(required["frame_load_cap"][1]["disable"], 0)
         self.assertEqual(required["frame_load_cap"][1]["widgetType"], "SLVINT")
         self.assertEqual(required["slice_index"][1]["default"], 0)

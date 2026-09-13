@@ -85,6 +85,44 @@ def snap_frame_count(count: int, div: int, mod: int) -> int:
     return max(0, k)
 
 
+def snap_frame_count_up(count: int, div: int, mod: int) -> int:
+    """Smallest n >= max(count, mod) with n % div == mod. 0 stays 0."""
+    n = int(count)
+    step = int(div)
+    remainder = int(mod)
+    if n <= 0 or step <= 0:
+        return max(0, n)
+    n = max(n, remainder)
+    return n + (remainder - n % step) % step
+
+
+def frames_from_cap_seconds(
+    seconds: float,
+    fps: float,
+    frames_rule: list[int] | tuple[int, ...] | None = None,
+) -> int:
+    if float(seconds) <= 0 or float(fps) <= 0:
+        return 0
+    raw = int(round(float(fps) * float(seconds)))
+    if frames_rule and len(frames_rule) >= 2:
+        return snap_frame_count_up(raw, frames_rule[0], frames_rule[1])
+    return raw
+
+
+def resolve_frame_load_cap(
+    frame_load_cap: int,
+    cap_seconds: float,
+    fps: float,
+    frames_rule: list[int] | tuple[int, ...] | None = None,
+) -> int:
+    if float(cap_seconds) > 0:
+        return frames_from_cap_seconds(cap_seconds, fps, frames_rule)
+    cap = int(frame_load_cap)
+    if cap > 0 and frames_rule and len(frames_rule) >= 2:
+        return snap_frame_count_up(cap, frames_rule[0], frames_rule[1])
+    return cap
+
+
 def snap_up(dim: int, multiple: int) -> int:
     m = max(1, int(multiple))
     d = max(1, int(dim))
@@ -556,8 +594,7 @@ class SmartLoadVideo:
                         "placeholder": r"D:\videos\clip.mp4",
                         "tooltip": (
                             "Absolute path (or ~) to a video on disk. "
-                            "When set, this is used instead of the input-folder combo. "
-                            "Use this for files larger than ComfyUI's upload limit."
+                            "When set, this is used instead of the input-folder combo."
                         ),
                     },
                 ),
@@ -619,6 +656,20 @@ class SmartLoadVideo:
                         ),
                     },
                 ),
+                "cap_seconds": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": _TIME_MAX,
+                        "step": 0.1,
+                        "tooltip": (
+                            "0 leaves frame_load_cap unchanged. "
+                            "Otherwise sets frame_load_cap from loaded fps × seconds, "
+                            "then snaps to the format frame rule."
+                        ),
+                    },
+                ),
                 "frame_load_cap": (
                     "INT",
                     {
@@ -672,6 +723,7 @@ class SmartLoadVideo:
         custom_height: int = 0,
         multiple: int = 1,
         format: str = "None",
+        cap_seconds: float = 0.0,
         frame_load_cap: int = 0,
         start_time: float = 0.0,
         slice_index: int = 0,
@@ -681,6 +733,11 @@ class SmartLoadVideo:
         ffmpeg_path = _resolve_ffmpeg()
         probe = _probe_video(ffmpeg_path, path)
         fps = loaded_framerate(force_rate, probe["fps"])
+        spec = get_load_format(format)
+        frames_rule = spec.get("frames")
+        frame_load_cap = resolve_frame_load_cap(
+            frame_load_cap, cap_seconds, fps, frames_rule
+        )
         seek = effective_start_seconds(start_time, slice_index, frame_load_cap, fps)
         out_w, out_h = target_size(
             probe["width"],
@@ -729,8 +786,6 @@ class SmartLoadVideo:
                 device=images.device,
             )
 
-        spec = get_load_format(format)
-        frames_rule = spec.get("frames")
         if frames_rule and len(frames_rule) >= 2:
             keep = snap_frame_count(int(images.shape[0]), frames_rule[0], frames_rule[1])
             if keep <= 0:
@@ -756,6 +811,7 @@ class SmartLoadVideo:
         custom_height=0,
         multiple=1,
         format="None",
+        cap_seconds=0.0,
         frame_load_cap=0,
         start_time=0.0,
         slice_index=0,
@@ -773,6 +829,7 @@ class SmartLoadVideo:
             int(custom_height),
             int(multiple),
             str(format),
+            float(cap_seconds),
             int(frame_load_cap),
             float(start_time),
             int(slice_index),

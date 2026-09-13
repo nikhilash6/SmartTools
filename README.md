@@ -137,17 +137,18 @@ Self-contained FFmpeg video loader. It does **not** depend on VideoHelperSuite. 
 
 | Input | Notes |
 |--------|--------|
-| `video` | Combo of videos in the input folder. Use **choose video to upload** (or drag-and-drop) for **small** files only. ComfyUI rejects uploads larger than `--max-upload-size` (default 100 MB). |
+| `video` | Combo of videos already in the ComfyUI input folder. Drag-and-drop can add a **small** file here; ComfyUI rejects uploads larger than `--max-upload-size` (default 100 MB). |
 | `video_path` | Absolute path (or `~`) to a video on disk. When set, this is used instead of the combo — FFmpeg reads the file in place, so size does not matter. Use **browse video path**. |
 | `force_rate` | `0` keeps the source fps. The widget shows the source rate (`59.93↩`) when at `0`. Disable (slashed circle) returns to `0`; reset writes the source fps as an explicit value. |
 | `custom_width` / `custom_height` | `0` keeps or derives that edge from the other. Both set crops to the new aspect, then scales. Format presets add reset sizes (H3: 1344×768). |
 | `multiple` | After the target size is chosen, both edges snap **up** to this multiple. Default `1` is a no-op. Selecting a format other than **None** sets this to the preset grid (H3 → 32). You can override it afterward. |
-| `format` | VHS-style model preset (`None`, AnimateDiff, Mochi, LTXV, Hunyuan, Cosmos, Wan, H3). Only updates reset/step targets until you click reset. **H3:** reset 24 fps and 1344×768, `multiple` 32, loaded frames truncated to `n % 17 == 5` (5, 22, 39, …). |
-| `frame_load_cap` | `0` loads all remaining frames from the effective start. The widget shows the source (or format-legal) frame count when at `0`. Disable returns to `0`; reset writes that count. For N-second slices: `frame_load_cap = N * fps` (e.g. 300 frames at 30 fps ≈ 10 seconds). |
+| `format` | VHS-style model preset (`None`, AnimateDiff, Mochi, LTXV, Hunyuan, Cosmos, Wan, H3). Only updates reset/step targets until you click reset. **H3:** reset 24 fps and 1344×768, `multiple` 32. Requested caps snap **up** to `5 + 17n` (48 → 56); leftover loaded frames still truncate down. |
+| `cap_seconds` | `0` leaves `frame_load_cap` alone. Otherwise live-sets `frame_load_cap` from loaded fps × seconds (`force_rate` if set, else source fps), then snaps **up** to the format frame rule (H3: `2s` at 24 fps → 56). |
+| `frame_load_cap` | `0` loads all remaining frames from the effective start. The widget shows the source (or format-legal) frame count when at `0`. Disable returns to `0`; reset writes that count. Overwritten while `cap_seconds` is `> 0`. |
 | `start_time` | Start offset in seconds (index `0`). |
 | `slice_index` | `0` starts at `start_time`. Each next index jumps forward by `frame_load_cap` frames (`start_time + slice_index * frame_load_cap / fps`). `slice_index > 0` requires `frame_load_cap > 0`. |
 
-**Large clips:** do not upload them. Set `video_path` (browse or paste), leave `start_time` at `0`, set `frame_load_cap` to `seconds * fps`, and increment `slice_index` each run (a 2-minute clip in 10-second chunks is indices `0`–`11` at 30 fps with cap `300`).
+**Large clips:** use `video_path` (browse or paste), leave `start_time` at `0`, set `cap_seconds` (e.g. `10`) so `frame_load_cap` is filled and format-snapped, and increment `slice_index` each run (a 2-minute clip in 10-second chunks is indices `0`–`11`).
 
 The node shows a preview of the selected combo file or disk path and annotates `force_rate` / `frame_load_cap` with the source fps and total frames (`web/smart_load_video.js`). Restart ComfyUI after installing or updating this pack so the browse/view/query routes register.
 
