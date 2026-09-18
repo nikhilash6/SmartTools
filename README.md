@@ -150,7 +150,7 @@ Self-contained FFmpeg video loader. It does **not** depend on VideoHelperSuite. 
 
 **Large clips:** use `video_path` (browse or paste), leave `start_time` at `0`, set `cap_seconds` (e.g. `10`) so `frame_load_cap` is filled and format-snapped, and increment `slice_index` each run (a 2-minute clip in 10-second chunks is indices `0`–`11`).
 
-The node shows a preview of the selected combo file or disk path and annotates `force_rate` / `frame_load_cap` with the source fps and total frames (`web/smart_load_video.js`). Restart ComfyUI after installing or updating this pack so the browse/view/query routes register.
+The node shows a preview of the selected combo file or disk path, clipped to the loaded slice (`start_time` + `slice_index * frame_load_cap / fps`, for `frame_load_cap / fps` seconds). It annotates `force_rate` / `frame_load_cap` with the source fps and total frames (`web/smart_load_video.js`). Restart ComfyUI after installing or updating this pack so the browse/view/query routes register.
 
 **Outputs:** `IMAGE` (frame batch), `mask` (inverted alpha, or ones when there is no alpha), `audio` (Comfy `AUDIO` aligned to the loaded slice; silence if the file has no audio), `framerate` (loaded fps: `force_rate` when set, otherwise source fps), `total_frames` (frames actually loaded after format trim).
 

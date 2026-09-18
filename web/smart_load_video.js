@@ -425,6 +425,8 @@ app.registerExtension({
             const formatWidget = getWidget("format");
             const capSecondsWidget = getWidget("cap_seconds");
             const capWidget = replaceNumberWidget(this, getWidget("frame_load_cap"), true);
+            const startWidget = getWidget("start_time");
+            const sliceWidget = getWidget("slice_index");
             const formatMap =
                 nodeData?.input?.required?.format?.[1]?.formats || {};
 
@@ -451,20 +453,22 @@ app.registerExtension({
                     return;
                 }
                 const current = Number(capWidget.value);
-                if (!(current > 0)) return;
-                const next = legalFrameCountUp(current, currentFormat().frames);
-                if (Number(capWidget.value) === next) return;
-                capWidget.value = next;
+                if (current > 0) {
+                    const next = legalFrameCountUp(current, currentFormat().frames);
+                    if (Number(capWidget.value) !== next) capWidget.value = next;
+                }
+                applyPreviewWindow();
             }
 
             function applyCapFromSeconds() {
                 if (!capWidget) return;
                 const seconds = Number(capSecondsWidget?.value);
                 const fps = loadedFps();
-                if (!(seconds > 0) || !(fps > 0)) return;
-                const next = framesFromCapSeconds(seconds, fps, currentFormat().frames);
-                if (Number(capWidget.value) === next) return;
-                capWidget.value = next;
+                if (seconds > 0 && fps > 0) {
+                    const next = framesFromCapSeconds(seconds, fps, currentFormat().frames);
+                    if (Number(capWidget.value) !== next) capWidget.value = next;
+                }
+                applyPreviewWindow();
             }
             this.applyCapFromSeconds = applyCapFromSeconds;
             this.snapCapWidget = snapCapWidget;
@@ -598,11 +602,14 @@ app.registerExtension({
             previewRoot.style.width = "100%";
             const videoEl = document.createElement("video");
             videoEl.controls = true;
-            videoEl.loop = true;
+            videoEl.loop = false;
             videoEl.muted = true;
             videoEl.playsInline = true;
             videoEl.style.width = "100%";
             videoEl.style.display = "block";
+            let previewSeeking = false;
+            let previewStart = 0;
+            let previewEnd = Infinity;
             const imgEl = document.createElement("img");
             imgEl.style.width = "100%";
             imgEl.style.display = "none";
@@ -641,11 +648,67 @@ app.registerExtension({
                 return [w, Math.max(80, height)];
             };
 
+            function previewWindow() {
+                const start = Math.max(0, Number(startWidget?.value) || 0);
+                const slice = Math.max(0, Number(sliceWidget?.value) || 0);
+                const cap = Math.max(0, Number(capWidget?.value) || 0);
+                const fps = loadedFps();
+                const seek =
+                    slice > 0 && cap > 0 && fps > 0 ? start + (slice * cap) / fps : start;
+                const duration = cap > 0 && fps > 0 ? cap / fps : 0;
+                return { seek, duration };
+            }
+
+            function applyPreviewWindow() {
+                const { seek, duration } = previewWindow();
+                previewStart = seek;
+                previewEnd = duration > 0 ? seek + duration : Infinity;
+                if (videoEl.readyState < 1 || !videoEl.duration) return;
+                const end = Number.isFinite(previewEnd)
+                    ? Math.min(previewEnd, videoEl.duration)
+                    : videoEl.duration;
+                if (!(end > previewStart)) return;
+                if (videoEl.currentTime < previewStart || videoEl.currentTime >= end) {
+                    previewSeeking = true;
+                    videoEl.currentTime = previewStart;
+                }
+            }
+
+            function clampPreviewTime() {
+                if (previewSeeking || videoEl.readyState < 1 || !videoEl.duration) return;
+                const end = Number.isFinite(previewEnd)
+                    ? Math.min(previewEnd, videoEl.duration)
+                    : videoEl.duration;
+                if (!(end > previewStart)) return;
+                if (videoEl.currentTime < previewStart - 0.02) {
+                    previewSeeking = true;
+                    videoEl.currentTime = previewStart;
+                    return;
+                }
+                if (videoEl.currentTime >= end - 0.05) {
+                    previewSeeking = true;
+                    videoEl.currentTime = previewStart;
+                    if (videoEl.paused) videoEl.play().catch(() => {});
+                }
+            }
+
             videoEl.addEventListener("loadedmetadata", () => {
                 if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
                     previewWidget.aspectRatio = videoEl.videoWidth / videoEl.videoHeight;
                     fitHeight();
                 }
+                applyPreviewWindow();
+            });
+            videoEl.addEventListener("timeupdate", clampPreviewTime);
+            videoEl.addEventListener("seeking", clampPreviewTime);
+            videoEl.addEventListener("seeked", () => {
+                previewSeeking = false;
+            });
+            videoEl.addEventListener("ended", () => {
+                if (!(videoEl.duration > previewStart)) return;
+                previewSeeking = true;
+                videoEl.currentTime = previewStart;
+                videoEl.play().catch(() => {});
             });
             imgEl.addEventListener("load", () => {
                 if (imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
@@ -742,6 +805,15 @@ app.registerExtension({
                     return result;
                 };
             }
+            for (const widget of [startWidget, sliceWidget]) {
+                if (!widget) continue;
+                const original = widget.callback;
+                widget.callback = function (value) {
+                    const result = original?.apply(this, arguments);
+                    applyPreviewWindow();
+                    return result;
+                };
+            }
 
             const prevWidgetChanged = this.onWidgetChanged;
             this.onWidgetChanged = function (name, value, oldValue, widget) {
@@ -753,6 +825,8 @@ app.registerExtension({
                 } else if (name === "frame_load_cap") {
                     snapCapWidget();
                     app.graph?.setDirtyCanvas?.(true, true);
+                } else if (name === "start_time" || name === "slice_index") {
+                    applyPreviewWindow();
                 }
                 return result;
             };
